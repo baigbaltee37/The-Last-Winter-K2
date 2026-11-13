@@ -1,0 +1,6 @@
+{
+  "name": "THE LAST WINTER K2",
+  "description": "Realistic 3D mountaineering adventure and survival game set in Pakistan's Karakoram mountains, culminating in the winter ascent of K2.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
