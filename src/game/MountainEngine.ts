@@ -192,8 +192,14 @@ export class MountainEngine {
   private onTelemetry: (t: GameTelemetry) => void;
   private onLevelComplete: (t: GameTelemetry) => void;
   private onGameOver: (t: GameTelemetry) => void;
+  private onProgressSync?: (data: {
+    levelId: number;
+    completedMissionIds: string[];
+    inventory: Record<string, { quantity: number; durability: number }>;
+  }) => void;
 
   private frameId = 0;
+  private softwareTimerId = 0;
   private disposed = false;
   private clock = new THREE.Clock();
   private mode: 'menu' | 'cutscene' | 'playing' | 'paused' = 'menu';
@@ -205,8 +211,8 @@ export class MountainEngine {
   private playerVel = new THREE.Vector3(0, 0, 0);
   private playerYaw = 0;
   private cameraYaw = 0;
-  private cameraPitch = 0.26;
-  private cameraZoom = 6.4;
+  private cameraPitch = 0.11;
+  private cameraZoom = 6.2;
   private grounded = true;
   private stepTimer = 0;
   private climbSoundTimer = 0;
@@ -264,6 +270,8 @@ export class MountainEngine {
   private shelterTimer = 0;
   private statusBanner: string | null = null;
   private statusBannerTimer = 0;
+  private missionNotification: { title: string; subtitle: string } | null = null;
+  private missionNotificationTimer = 0;
   private missions: MissionStep[] = [];
   private o2CollectedCount = 0;
   private activeDecision: StoryDecision | null = null;
@@ -294,13 +302,22 @@ export class MountainEngine {
       onTelemetry: (t: GameTelemetry) => void;
       onLevelComplete: (t: GameTelemetry) => void;
       onGameOver: (t: GameTelemetry) => void;
-    }
+      onProgressSync?: (data: {
+        levelId: number;
+        completedMissionIds: string[];
+        inventory: Record<string, { quantity: number; durability: number }>;
+      }) => void;
+    },
+    initialRoute: RouteChoice = 'abruzzi',
+    initialGearUpgrades: GearUpgradeLevels = { iceAxes: 0, parka: 0, o2Regulator: 0, ropeLine: 0 },
+    initialSavedInventory?: Record<string, { quantity: number; durability: number }>
   ) {
     this.container = container;
     this.settings = initialSettings;
     this.onTelemetry = callbacks.onTelemetry;
     this.onLevelComplete = callbacks.onLevelComplete;
     this.onGameOver = callbacks.onGameOver;
+    this.onProgressSync = callbacks.onProgressSync;
 
     this.isSoftwareGl = (() => {
       try {
@@ -316,15 +333,16 @@ export class MountainEngine {
       }
     })();
 
+    const effectiveInitQuality = this.resolveEffectiveGraphics(initialSettings.graphics);
     this.renderer = new THREE.WebGLRenderer({
-      antialias: !this.isSoftwareGl && initialSettings.graphics !== 'low',
+      antialias: !this.isSoftwareGl && effectiveInitQuality !== 'low',
       powerPreference: 'high-performance',
     });
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.06;
+    this.renderer.toneMappingExposure = 1.15;
     this.applyGraphicsPixelRatio();
-    this.renderer.shadowMap.enabled = !this.isSoftwareGl && initialSettings.graphics !== 'low';
+    this.renderer.shadowMap.enabled = !this.isSoftwareGl && effectiveInitQuality !== 'low';
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.setSize(
       container.clientWidth || window.innerWidth,
@@ -340,26 +358,28 @@ export class MountainEngine {
     this.renderer.domElement.addEventListener('webglcontextlost', (e) => e.preventDefault());
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0b1526);
-    this.fog = new THREE.FogExp2(0x162436, 0.0065);
+    this.scene.background = new THREE.Color(0x4b6a88);
+    this.fog = new THREE.FogExp2(0x7d97b0, 0.0015);
     this.scene.fog = this.fog;
 
     const aspect =
       (container.clientWidth || window.innerWidth) /
       (container.clientHeight || window.innerHeight);
-    this.camera = new THREE.PerspectiveCamera(58, aspect, 0.25, 560);
+    const farDist =
+      effectiveInitQuality === 'low' ? 1050 : effectiveInitQuality === 'medium' ? 1400 : 1650;
+    this.camera = new THREE.PerspectiveCamera(58, aspect, 0.25, farDist);
 
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     pmrem.dispose();
 
-    this.hemiLight = new THREE.HemisphereLight(0x88a9c9, 0x2b3644, 0.72);
+    this.hemiLight = new THREE.HemisphereLight(0xaad0f2, 0x3b495c, 0.85);
     this.scene.add(this.hemiLight);
 
-    this.sunLight = new THREE.DirectionalLight(0xfff0d8, 1.65);
+    this.sunLight = new THREE.DirectionalLight(0xfff4e2, 1.9);
     this.sunLight.position.set(45, 70, 35);
-    this.sunLight.castShadow = !this.isSoftwareGl && initialSettings.graphics !== 'low';
-    const smSize = initialSettings.graphics === 'high' ? 2048 : 1024;
+    this.sunLight.castShadow = !this.isSoftwareGl && effectiveInitQuality !== 'low';
+    const smSize = effectiveInitQuality === 'high' ? 2048 : 1024;
     this.sunLight.shadow.mapSize.set(smSize, smSize);
     this.sunLight.shadow.camera.near = 2;
     this.sunLight.shadow.camera.far = 220;
@@ -373,16 +393,31 @@ export class MountainEngine {
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    this.rimLight = new THREE.DirectionalLight(0x7ca2c9, 0.52);
+    this.rimLight = new THREE.DirectionalLight(0x9bc4ec, 0.65);
     this.rimLight.position.set(-40, 28, -55);
     this.scene.add(this.rimLight);
+    this.scene.add(this.rimLight.target);
 
     this.scene.add(this.worldGroup);
 
-    const maxAniso = this.renderer.capabilities.getMaxAnisotropy();
+    const maxAniso =
+      effectiveInitQuality === 'low'
+        ? 1
+        : Math.min(
+            effectiveInitQuality === 'high' ? 8 : 4,
+            this.renderer.capabilities.getMaxAnisotropy()
+          );
     this.textures = createAlpineTextures(maxAniso);
 
-    this.loadExpedition(initialLevel, initialChar, 'menu', 'abruzzi');
+    this.loadExpedition(
+      initialLevel,
+      initialChar,
+      'menu',
+      initialRoute,
+      initialGearUpgrades,
+      undefined,
+      initialSavedInventory
+    );
 
     if (!this.isSoftwareGl) {
       this.renderer.compile(this.scene, this.camera);
@@ -393,34 +428,64 @@ export class MountainEngine {
     this.tick();
   }
 
+  public getEffectiveGraphics(): 'low' | 'medium' | 'high' {
+    return this.resolveEffectiveGraphics(this.settings.graphics);
+  }
+
+  private resolveEffectiveGraphics(requested: GameSettings['graphics']): 'low' | 'medium' | 'high' {
+    if (requested !== 'auto') return requested;
+    if (this.isSoftwareGl) return 'low';
+    const nav = navigator as Navigator & { deviceMemory?: number };
+    const mem = nav.deviceMemory ?? 4;
+    const cores = navigator.hardwareConcurrency ?? 4;
+    const isNarrowMobile =
+      window.innerWidth < 840 || 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    if (mem <= 2 || cores <= 2) return 'low';
+    if (isNarrowMobile || mem <= 4 || cores <= 4) return 'medium';
+    return 'high';
+  }
+
   private applyGraphicsPixelRatio() {
-    if (this.isSoftwareGl || this.settings.graphics === 'low') {
+    const q = this.resolveEffectiveGraphics(this.settings.graphics);
+    if (this.isSoftwareGl || q === 'low') {
       this.renderer.setPixelRatio(1);
-    } else if (this.settings.graphics === 'medium') {
-      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
+    } else if (q === 'medium') {
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.35));
     } else {
       this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     }
   }
 
   public updateSettings(newSettings: GameSettings) {
-    const graphicsChanged = newSettings.graphics !== this.settings.graphics;
+    const prevEff = this.resolveEffectiveGraphics(this.settings.graphics);
     this.settings = newSettings;
+    const nextEff = this.resolveEffectiveGraphics(newSettings.graphics);
     audioEngine.setVolume(newSettings.masterVolume);
     this.applyGraphicsPixelRatio();
-    const shadowsEnabled = !this.isSoftwareGl && newSettings.graphics !== 'low';
+    const shadowsEnabled = !this.isSoftwareGl && nextEff !== 'low';
     this.renderer.shadowMap.enabled = shadowsEnabled;
     this.sunLight.castShadow = shadowsEnabled;
-    if (graphicsChanged && this.level && this.character) {
+    this.camera.far = nextEff === 'low' ? 1050 : nextEff === 'medium' ? 1400 : 1650;
+    this.camera.updateProjectionMatrix();
+    if (prevEff !== nextEff && this.level && this.character) {
       this.rebuildSnowParticles();
     }
   }
 
   public setMode(mode: 'menu' | 'cutscene' | 'playing' | 'paused') {
+    const prevMode = this.mode;
     this.mode = mode;
     if (mode === 'playing') {
       this.clock.getDelta();
       audioEngine.setMusicIntensity(0.05);
+      if (prevMode !== 'paused') {
+        this.snapCameraToPlayer();
+        const currentPrimary = this.getCurrentPrimaryMission();
+        if (currentPrimary && !this.missionNotification) {
+          this.notifyMission('CURRENT OBJECTIVE', currentPrimary.label);
+        }
+      }
+      this.pushTelemetry();
     } else if (mode === 'cutscene') {
       audioEngine.setMusicIntensity(0.16);
       audioEngine.setRiverVolume(0);
@@ -465,7 +530,8 @@ export class MountainEngine {
     mode: 'menu' | 'cutscene' | 'playing',
     route: RouteChoice = 'abruzzi',
     gearUpgrades: GearUpgradeLevels = { iceAxes: 0, parka: 0, o2Regulator: 0, ropeLine: 0 },
-    variationSeed?: number
+    variationSeed?: number,
+    savedInventory?: Record<string, { quantity: number; durability: number }>
   ) {
     this.level = level;
     this.character = character;
@@ -482,7 +548,7 @@ export class MountainEngine {
 
     this.clearWorld();
 
-    // Survival & 19-item Equipment Baseline
+    // Survival & 19-item Equipment Baseline (hydrated from persistent save when available)
     this.health = 100;
     this.oxygen = level.altitudeStart > 7500 ? 88 : 100;
     this.stamina = 100;
@@ -495,6 +561,16 @@ export class MountainEngine {
     this.headlampBattery = 100;
     this.balance = 0;
     this.equipment = createInitialEquipment(level.id);
+    if (savedInventory) {
+      for (const item of this.equipment) {
+        const savedItem = savedInventory[item.id];
+        if (savedItem) {
+          const minQty = item.id === 'rope' ? 1 : item.id === 'carabiners' ? 2 : 0;
+          item.quantity = Math.max(minQty, savedItem.quantity);
+          item.durability = THREE.MathUtils.clamp(savedItem.durability, 15, 100);
+        }
+      }
+    }
 
     const startsDark =
       level.lightingMode === 'night' ||
@@ -517,8 +593,10 @@ export class MountainEngine {
     this.lightningFlash = 0;
     this.floodWaterLevel = 0.35;
     this.shelterTimer = 0;
-    this.statusBanner = level.storyBrief.slice(0, 128);
-    this.statusBannerTimer = 6.2;
+    this.statusBanner = null;
+    this.statusBannerTimer = 0;
+    this.missionNotification = null;
+    this.missionNotificationTimer = 0;
     this.o2CollectedCount = 0;
     this.activeDecision = null;
     this.decisionTriggered = false;
@@ -551,46 +629,66 @@ export class MountainEngine {
     this.leftAxeSwingTimer = 0;
     this.rightAxeSwingTimer = 0;
 
-    // Build Action-Adventure Mission Steps
+    // Build Terrain first so exact progress targets can be computed
+    this.terrain = new KarakoramTerrain(level, route, this.variationSeed);
+
+    // Build Sequential Primary + Optional Mission Steps (in ridge encounter order)
     this.missions = [];
     if (level.hasForestValley) {
+      const valleyMeters = Math.round(level.ridgeLength * 0.16);
       this.missions.push({
         id: 'trek_valley',
         label: 'Trek through the pine & rocky valley approach',
         type: 'trek_valley',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: valleyMeters,
       });
     }
-    if (level.hasGlacierRiver) {
+    if (level.hasGlacierRiver && this.terrain.rivers.length > 0) {
       this.missions.push({
         id: 'cross_flood',
         label: 'Rig safety rope & cross the glacial meltwater river',
         type: 'cross_flood',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: 1,
       });
     }
-    if (level.hasRockfall) {
+    if (level.hasRockfall && this.terrain.rockfallZones.length > 0) {
+      const rockTarget = Math.max(1, Math.round(Math.abs(this.terrain.rockfallZones[0].zEnd - 2)));
       this.missions.push({
         id: 'survive_rockfall',
         label: 'Take boulder cover & clear the rockfall couloir',
         type: 'survive_rockfall',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: rockTarget,
       });
     }
-    if (level.hasObstacles) {
+    if (level.hasObstacles && this.terrain.obstacleSlots.length > 0) {
       this.missions.push({
         id: 'clear_obstacle',
         label: 'Shove fallen debris barricade off the ridge [X]',
         type: 'clear_obstacle',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: this.terrain.obstacleSlots.length,
       });
     }
-    if (level.hasWildlife) {
+    if (level.hasWildlife && this.terrain.wildlifeZones.length > 0) {
       this.missions.push({
         id: 'repel_wildlife',
-        label: 'Repel stalking snow predators (Ice Axe Q/E or Flare 6)',
+        label: 'Repel stalking snow predators (Ice Axe Q/F or Flare 6)',
         type: 'repel_wildlife',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: this.terrain.wildlifeZones.length,
       });
     }
     if (level.requiredO2Collect > 0) {
@@ -599,22 +697,31 @@ export class MountainEngine {
         label: `Recover ${level.requiredO2Collect} Lost Oxygen Cylinder${level.requiredO2Collect > 1 ? 's' : ''}`,
         type: 'collect_o2',
         completed: false,
+        optional: true,
+        progressCurrent: 0,
+        progressTarget: level.requiredO2Collect,
       });
     }
     if (level.hasIceWall) {
       this.missions.push({
         id: 'install_rope',
-        label: 'Manually anchor & rig climbing rope on the ice wall',
+        label: 'Anchor & rig climbing rope [R] on the steep ice wall',
         type: 'install_rope',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: 1,
       });
     }
     if (level.hasBrokenAnchor) {
       this.missions.push({
         id: 'repair_anchor',
-        label: 'Repair damaged belay anchor along upper pitch',
+        label: 'Repair damaged belay anchor along upper pitch [E]',
         type: 'repair_anchor',
         completed: false,
+        optional: true,
+        progressCurrent: 0,
+        progressTarget: 1,
       });
     }
     if (
@@ -629,19 +736,25 @@ export class MountainEngine {
             ? 'Outrun the sudden slab avalanche to high ground'
             : level.specialMission === 'ice_cave_escape'
               ? 'Escape the collapsing ice cavern before cave-in'
-              : 'Escape rising floodwaters across alternate crossing',
+              : 'Escape rising floodwaters to upper glacier shelf',
         type: 'escape_hazard',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: 1,
       });
     }
     if (level.hasRescueNpc || level.hasMissingMember) {
       this.missions.push({
         id: 'rescue_climber',
         label: level.hasMissingMember
-          ? 'Locate missing climber via radio & headlamp'
-          : 'Reach & stabilize injured expedition teammate [F]',
+          ? 'Locate missing climber via radio & headlamp [E]'
+          : 'Reach & stabilize injured expedition teammate [E]',
         type: 'rescue_climber',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: 1,
       });
       if (
         level.specialMission === 'injured_evacuation' ||
@@ -653,6 +766,9 @@ export class MountainEngine {
           label: 'Evacuate injured teammate to Camp / Helipad safety',
           type: 'escort_teammate',
           completed: false,
+          optional: false,
+          progressCurrent: 0,
+          progressTarget: 1,
         });
       }
     }
@@ -662,6 +778,9 @@ export class MountainEngine {
         label: 'Ignite Emergency Flare [6] at Helipad to guide rescue chopper',
         type: 'signal_helicopter',
         completed: false,
+        optional: false,
+        progressCurrent: 0,
+        progressTarget: 1,
       });
     }
     if (level.hasEmergencyShelter && !level.hasHelicopterRescue) {
@@ -670,6 +789,9 @@ export class MountainEngine {
         label: 'Warm up inside emergency shelter or Mid-Camp fire',
         type: 'shelter_night',
         completed: false,
+        optional: true,
+        progressCurrent: 0,
+        progressTarget: 3,
       });
     }
     this.missions.push({
@@ -680,14 +802,15 @@ export class MountainEngine {
           : `Reach ${level.name} Summit Checkpoint`,
       type: 'reach_camp',
       completed: false,
+      optional: false,
+      progressCurrent: 0,
+      progressTarget: level.ridgeLength,
     });
 
-    // Build Terrain with Variation Seed
-    this.terrain = new KarakoramTerrain(level, route, this.variationSeed);
-    const segX =
-      this.settings.graphics === 'low' ? 60 : this.settings.graphics === 'medium' ? 88 : 112;
-    const segZ =
-      this.settings.graphics === 'low' ? 140 : this.settings.graphics === 'medium' ? 195 : 250;
+    // Build Terrain Geometry with Variation Seed
+    const effGraphics = this.resolveEffectiveGraphics(this.settings.graphics);
+    const segX = effGraphics === 'low' ? 60 : effGraphics === 'medium' ? 88 : 112;
+    const segZ = effGraphics === 'low' ? 140 : effGraphics === 'medium' ? 195 : 250;
     const terrainGeo = this.terrain.buildGeometry(segX, segZ);
     const terrainMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
@@ -725,12 +848,20 @@ export class MountainEngine {
     this.playerVel.set(0, 0, 0);
     this.playerYaw = 0;
     this.cameraYaw = 0;
-    this.cameraPitch = 0.26;
+    this.cameraPitch = 0.11;
+    this.cameraZoom = 6.2;
     this.playerRig.root.position.copy(this.playerPos);
     this.applyHeadlampVisual();
     this.worldGroup.add(this.playerRig.root);
 
     this.setMode(mode);
+    if (mode === 'menu') {
+      this.camera.position.set(startX - 4.4, startY + 2.8, 8.8);
+      this.camera.lookAt(startX, startY + 2.2, -24);
+    } else if (mode === 'cutscene') {
+      this.camera.position.set(startX - 3.8, startY + 2.9, 8.4);
+      this.camera.lookAt(startX, startY + 2.5, -36);
+    }
     this.pushTelemetry();
   }
 
@@ -801,31 +932,51 @@ export class MountainEngine {
 
   private buildKarakoramBackdrop() {
     if (!this.terrain) return;
-    const peakGeo = new THREE.ConeGeometry(1, 1, 6);
+    // Dual-tone snow-capped mountain geometry using vertex colors (granite lower -> snow ridge top)
+    const peakGeo = new THREE.ConeGeometry(1, 1, 7, 4);
+    const pos = peakGeo.attributes.position as THREE.BufferAttribute;
+    const colors = new Float32Array(pos.count * 3);
+    const col = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+      const y = pos.getY(i); // -0.5 .. +0.5
+      if (y > 0.04) {
+        col.setHex(0xe8f1fa); // bright snow cap
+      } else if (y > -0.14) {
+        col.setHex(0x9fb2c7); // granite + snow transition
+      } else {
+        col.setHex(0x4f5f73); // dark Karakoram rock base
+      }
+      colors[i * 3] = col.r;
+      colors[i * 3 + 1] = col.g;
+      colors[i * 3 + 2] = col.b;
+    }
+    peakGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
     const peakMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
       map: this.textures.rockAlbedo,
-      color: 0x9fb0c2,
-      roughness: 0.9,
-      metalness: 0.05,
+      roughness: 0.88,
+      metalness: 0.04,
     });
 
-    const peakCount = 34;
+    const peakCount = 46;
     const peaks = new THREE.InstancedMesh(peakGeo, peakMat, peakCount);
     const c = new THREE.Color();
 
     for (let i = 0; i < peakCount; i++) {
       const side = i % 2 === 0 ? -1 : 1;
-      const distX = 76 + (i % 5) * 26 + Math.random() * 20;
-      const zPos = 50 - (i / peakCount) * (this.level.ridgeLength + 280);
-      const scaleXZ = 38 + Math.random() * 34;
-      const scaleY = 64 + Math.random() * 72;
-      _dummy.position.set(side * distX, scaleY * 0.38 - 12, zPos);
+      const distX = 74 + (i % 5) * 28 + Math.random() * 18;
+      const zPos = 35 - (i / peakCount) * (this.level.ridgeLength + 290);
+      const scaleXZ = 48 + Math.random() * 44;
+      const scaleY = 125 + Math.random() * 115;
+      _dummy.position.set(side * distX, scaleY * 0.42 - 6, zPos);
       _dummy.rotation.set(0, Math.random() * Math.PI, 0);
       _dummy.scale.set(scaleXZ, scaleY, scaleXZ);
       _dummy.updateMatrix();
       peaks.setMatrixAt(i, _dummy.matrix);
 
-      c.setHSL(0.58, 0.14, 0.56 + Math.random() * 0.24);
+      const tint = 0.9 + Math.random() * 0.1;
+      c.setRGB(tint, tint, Math.min(1, tint + 0.04));
       peaks.setColorAt(i, c);
     }
     peaks.instanceMatrix.needsUpdate = true;
@@ -833,58 +984,83 @@ export class MountainEngine {
     peaks.computeBoundingSphere();
     this.worldGroup.add(peaks);
 
-    // Iconic K2 Pyramid on Horizon
+    // Iconic K2 Pyramid on Horizon with crisp snow crown
+    const k2Geo = new THREE.ConeGeometry(165, 360, 5, 5);
+    const k2Pos = k2Geo.attributes.position as THREE.BufferAttribute;
+    const k2Colors = new Float32Array(k2Pos.count * 3);
+    for (let i = 0; i < k2Pos.count; i++) {
+      const ny = k2Pos.getY(i) / 360; // -0.5 .. +0.5
+      if (ny > -0.02) {
+        col.setHex(0xf1f7fe);
+      } else if (ny > -0.2) {
+        col.setHex(0xabc1d9);
+      } else {
+        col.setHex(0x526478);
+      }
+      k2Colors[i * 3] = col.r;
+      k2Colors[i * 3 + 1] = col.g;
+      k2Colors[i * 3 + 2] = col.b;
+    }
+    k2Geo.setAttribute('color', new THREE.BufferAttribute(k2Colors, 3));
+
     const k2Pyramid = new THREE.Mesh(
-      new THREE.ConeGeometry(92, 185, 5),
+      k2Geo,
       new THREE.MeshStandardMaterial({
+        vertexColors: true,
         map: this.textures.rockAlbedo,
-        color: 0xb7cbe0,
-        roughness: 0.86,
+        roughness: 0.84,
       })
     );
-    k2Pyramid.position.set(12, 76, -(this.level.ridgeLength + 135));
-    k2Pyramid.rotation.y = 0.45;
+    k2Pyramid.position.set(14, 155, -(this.level.ridgeLength + 170));
+    k2Pyramid.rotation.y = 0.48;
     this.worldGroup.add(k2Pyramid);
   }
 
   private buildInstancedRocks() {
     if (!this.terrain) return;
-    const rockGeo = new THREE.DodecahedronGeometry(1.1, 1);
+    const rockGeo = new THREE.DodecahedronGeometry(1.0, 1);
     const rockMat = new THREE.MeshStandardMaterial({
       map: this.textures.rockAlbedo,
       roughness: 0.92,
       metalness: 0.06,
     });
 
-    const count = this.settings.graphics === 'low' ? 75 : 150;
-    const rocks = new THREE.InstancedMesh(rockGeo, rockMat, count);
+    const effQ = this.resolveEffectiveGraphics(this.settings.graphics);
+    const maxCount = effQ === 'low' ? 65 : effQ === 'medium' ? 105 : 135;
+    const rocks = new THREE.InstancedMesh(rockGeo, rockMat, maxCount);
     rocks.castShadow = true;
     rocks.receiveShadow = true;
     const color = new THREE.Color();
 
-    for (let i = 0; i < count; i++) {
-      const z = -Math.random() * (this.level.ridgeLength + 15);
+    let placed = 0;
+    let attempts = 0;
+    while (placed < maxCount && attempts < maxCount * 5) {
+      attempts += 1;
+      const z = -8 - Math.random() * (this.level.ridgeLength + 8);
       const cx = this.terrain.ridgeCenterX(z);
       const side = Math.random() > 0.5 ? 1 : -1;
-      const offset = 5.8 + Math.random() * 24;
+      const offset = 5.4 + Math.random() * 9.5;
       const x = cx + side * offset;
+      if (this.terrain.getSlopeDegrees(x, z) > 34) continue;
       const y = this.terrain.getHeightAt(x, z);
 
-      const s = 0.7 + Math.random() * 1.9;
-      _dummy.position.set(x, y - 0.15, z);
+      const s = 0.65 + Math.random() * 1.45;
+      _dummy.position.set(x, y - 0.62 * s, z);
       _dummy.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
       _dummy.scale.set(
-        s * (0.85 + Math.random() * 0.3),
-        s * (0.7 + Math.random() * 0.5),
+        s * (0.9 + Math.random() * 0.3),
+        s * (0.65 + Math.random() * 0.4),
         s
       );
       _dummy.updateMatrix();
-      rocks.setMatrixAt(i, _dummy.matrix);
+      rocks.setMatrixAt(placed, _dummy.matrix);
 
       const shade = 0.62 + Math.random() * 0.25;
       color.setRGB(shade, shade, shade + 0.04);
-      rocks.setColorAt(i, color);
+      rocks.setColorAt(placed, color);
+      placed += 1;
     }
+    rocks.count = placed;
     rocks.instanceMatrix.needsUpdate = true;
     if (rocks.instanceColor) rocks.instanceColor.needsUpdate = true;
     rocks.computeBoundingSphere();
@@ -894,22 +1070,27 @@ export class MountainEngine {
   private buildValleyForestAndRivers() {
     if (!this.terrain) return;
 
-    // 1. Pine Forest Approach
+    // 1. Pine Forest Approach (keep z <= -10 and flatter ground so trees never block camera or float)
     if (this.level.hasForestValley) {
       const treeZoneLen = this.level.ridgeLength * 0.16;
-      const treeCount = this.settings.graphics === 'low' ? 24 : 44;
-      for (let i = 0; i < treeCount; i++) {
-        const z = -4 - Math.random() * treeZoneLen;
+      const treeCount = this.settings.graphics === 'low' ? 22 : 38;
+      let placed = 0;
+      let attempts = 0;
+      while (placed < treeCount && attempts < treeCount * 4) {
+        attempts += 1;
+        const z = -10 - Math.random() * Math.max(24, treeZoneLen - 6);
         const cx = this.terrain.ridgeCenterX(z);
-        const side = i % 2 === 0 ? -1 : 1;
-        const x = cx + side * (5.2 + Math.random() * 14);
+        const side = placed % 2 === 0 ? -1 : 1;
+        const x = cx + side * (6.0 + Math.random() * 7.5);
+        if (this.terrain.getSlopeDegrees(x, z) > 28) continue;
         const y = this.terrain.getHeightAt(x, z);
         const tree = createPineTreeModel();
-        const scale = 0.78 + Math.random() * 0.55;
-        tree.position.set(x, y - 0.15, z);
+        const scale = 0.78 + Math.random() * 0.48;
+        tree.position.set(x, y - 0.55, z);
         tree.scale.setScalar(scale);
         tree.rotation.y = Math.random() * Math.PI * 2;
         this.worldGroup.add(tree);
+        placed += 1;
       }
     }
 
@@ -958,12 +1139,12 @@ export class MountainEngine {
   private buildClimbingInfrastructure() {
     if (!this.terrain) return;
 
-    // Starting Base Camp Tent
+    // Starting Base Camp Tent (placed on left margin ahead of spawn so camera view stays clear)
     const baseTent = createTentCampModel();
-    const bx = this.terrain.ridgeCenterX(4.5) - 3.6;
-    const by = this.terrain.getHeightAt(bx, 4.5);
-    baseTent.position.set(bx, by, 4.5);
-    baseTent.rotation.y = 0.55;
+    const bx = this.terrain.ridgeCenterX(-4.0) - 5.4;
+    const by = this.terrain.getHeightAt(bx, -4.0);
+    baseTent.position.set(bx, by - 0.1, -4.0);
+    baseTent.rotation.y = 0.38;
     this.worldGroup.add(baseTent);
 
     // Mid-Camp Tent & Campfire
@@ -1289,8 +1470,14 @@ export class MountainEngine {
       (this.snowParticles.material as THREE.Material).dispose();
     }
 
-    this.snowCount =
-      this.settings.graphics === 'low' ? 420 : this.settings.graphics === 'medium' ? 1100 : 1900;
+    const effSnowQ = this.resolveEffectiveGraphics(this.settings.graphics);
+    this.snowCount = this.isSoftwareGl
+      ? 260
+      : effSnowQ === 'low'
+        ? 420
+        : effSnowQ === 'medium'
+          ? 1000
+          : 1800;
     this.snowPositions = new Float32Array(this.snowCount * 3);
     this.snowVelocities = new Float32Array(this.snowCount * 3);
 
@@ -1388,6 +1575,7 @@ export class MountainEngine {
       this.fatigue = Math.max(0, this.fatigue - 18);
       audioEngine.playOxygenHiss();
       this.showBanner('Connected fresh Oxygen Cylinder (+48% O2, -Headache)');
+      this.syncPersistentProgress();
       this.pushTelemetry();
       return;
     }
@@ -1403,6 +1591,7 @@ export class MountainEngine {
       this.stamina = Math.min(100, this.stamina + 25);
       this.health = Math.min(100, this.health + 10);
       this.showBanner('Ate High-Calorie Ration (+45% Food, +22% Warmth)');
+      this.syncPersistentProgress();
       this.pushTelemetry();
       return;
     }
@@ -1417,6 +1606,7 @@ export class MountainEngine {
       this.stamina = Math.min(100, this.stamina + 16);
       this.headacheSeverity = Math.max(0, this.headacheSeverity - 10);
       this.showBanner('Drank warm insulated water (+48% Hydration)');
+      this.syncPersistentProgress();
       this.pushTelemetry();
       return;
     }
@@ -1431,6 +1621,7 @@ export class MountainEngine {
       this.headacheSeverity = Math.max(0, this.headacheSeverity - 40);
       this.temperature = Math.min(100, this.temperature + 12);
       this.showBanner('First Aid administered (+38% Health, -40% Headache)');
+      this.syncPersistentProgress();
       this.pushTelemetry();
       return;
     }
@@ -1443,6 +1634,7 @@ export class MountainEngine {
         audioEngine.playHeadlampClick();
         this.applyHeadlampVisual();
         this.showBanner('Swapped spare headlamp cell (Battery 100%)');
+        this.syncPersistentProgress();
         this.pushTelemetry();
       } else {
         this.toggleHeadlamp();
@@ -1542,7 +1734,7 @@ export class MountainEngine {
           this.showBanner('Flare spotted! Rescue helicopter descending to Helipad!');
           const hm = this.missions.find((m) => m.type === 'signal_helicopter');
           if (hm && !hm.completed) {
-            hm.completed = true;
+            this.completePrimaryMission(hm);
             this.awardPoints(120);
             this.awardBadge('heli_signal', 180);
           }
@@ -1556,15 +1748,21 @@ export class MountainEngine {
         this.showBanner('Summit Flare blazing across the Karakoram sky!');
       } else if (scaredCount > 0) {
         this.showBanner('Magnesium Flare ignited — snow predator fleeing in panic!');
+        for (const w of this.wildlifeList) {
+          if (w.pos.distanceTo(this.playerPos) < 28) {
+            w.repelled = true;
+          }
+        }
         const wm = this.missions.find((m) => m.type === 'repel_wildlife');
-        if (wm && !wm.completed) {
-          wm.completed = true;
+        if (wm && !wm.completed && this.wildlifeList.every((wl) => wl.repelled)) {
+          this.completePrimaryMission(wm);
           this.awardPoints(100);
           this.awardBadge('predator_deterrent', 150);
         }
       } else {
         this.showBanner('Emergency Flare lit (18s illumination & wildlife deterrent)');
       }
+      this.syncPersistentProgress();
       this.pushTelemetry();
       return;
     }
@@ -1612,6 +1810,7 @@ export class MountainEngine {
     }
     audioEngine.playRepair();
     this.showBanner('Crampons, axes & boots repaired (+42% Durability)');
+    this.syncPersistentProgress();
     this.pushTelemetry();
   }
 
@@ -1725,7 +1924,53 @@ export class MountainEngine {
 
   private showBanner(text: string) {
     this.statusBanner = text;
-    this.statusBannerTimer = 3.6;
+    this.statusBannerTimer = 3.2;
+  }
+
+  private notifyMission(title: string, subtitle: string) {
+    this.missionNotification = { title, subtitle };
+    this.missionNotificationTimer = 4.2;
+  }
+
+  private getCurrentPrimaryMission(): MissionStep | undefined {
+    const primary = this.missions.filter((m) => !m.optional);
+    return primary.find((m) => !m.completed) || primary[primary.length - 1];
+  }
+
+  private syncPersistentProgress() {
+    if (!this.onProgressSync || !this.level) return;
+    const completedMissionIds = this.missions.filter((m) => m.completed).map((m) => m.id);
+    const inventory: Record<string, { quantity: number; durability: number }> = {};
+    for (const item of this.equipment) {
+      inventory[item.id] = {
+        quantity: item.quantity,
+        durability: Math.round(item.durability),
+      };
+    }
+    this.onProgressSync({
+      levelId: this.level.id,
+      completedMissionIds,
+      inventory,
+    });
+  }
+
+  private completePrimaryMission(mission: MissionStep) {
+    if (mission.completed) return;
+    mission.completed = true;
+    if (mission.progressTarget !== undefined) {
+      mission.progressCurrent = mission.progressTarget;
+    }
+    if (!mission.optional) {
+      const next = this.missions.find((m) => !m.optional && !m.completed);
+      if (next) {
+        this.notifyMission('OBJECTIVE COMPLETE', `Next: ${next.label}`);
+      } else {
+        this.notifyMission('OBJECTIVE COMPLETE', 'Proceed to final Summit / Camp');
+      }
+    } else {
+      this.notifyMission('OPTIONAL OBJECTIVE COMPLETE', mission.label);
+    }
+    this.syncPersistentProgress();
   }
 
   private findNearestAnchorSlot(): { slot: AnchorSlot | null; dist: number } {
@@ -1857,7 +2102,7 @@ export class MountainEngine {
       const slope = this.terrain ? this.terrain.getSlopeDegrees(this.playerPos.x, this.playerPos.z) : 0;
       const installM = this.missions.find((m) => m.type === 'install_rope');
       if (installM && !installM.completed && (slope > 22 || (nearSlot && nearSlot.purpose === 'icewall'))) {
-        installM.completed = true;
+        this.completePrimaryMission(installM);
       }
       return;
     }
@@ -1899,7 +2144,7 @@ export class MountainEngine {
       const slope = this.terrain ? this.terrain.getSlopeDegrees(this.playerPos.x, this.playerPos.z) : 0;
       const installM = this.missions.find((m) => m.type === 'install_rope');
       if (installM && !installM.completed && (slope > 22 || (nearSlot && nearSlot.purpose === 'icewall'))) {
-        installM.completed = true;
+        this.completePrimaryMission(installM);
       }
     }
   }
@@ -1969,16 +2214,15 @@ export class MountainEngine {
     const onPointerDown = (e: PointerEvent) => {
       audioEngine.init();
       if (this.mode !== 'playing') return;
-      if (this.activePointerId === null) {
-        this.activePointerId = e.pointerId;
-        this.draggingLook = true;
-        this.lastPointerX = e.clientX;
-        this.lastPointerY = e.clientY;
-      }
+      this.activePointerId = e.pointerId;
+      this.draggingLook = true;
+      this.lastPointerX = e.clientX;
+      this.lastPointerY = e.clientY;
     };
 
     const onPointerMove = (e: PointerEvent) => {
-      if (!this.draggingLook || e.pointerId !== this.activePointerId) return;
+      if (!this.draggingLook) return;
+      if (this.activePointerId !== null && e.pointerId !== this.activePointerId) return;
       const dx = e.clientX - this.lastPointerX;
       const dy = e.clientY - this.lastPointerY;
       this.lastPointerX = e.clientX;
@@ -1987,11 +2231,11 @@ export class MountainEngine {
       const sens = 0.0048 * this.settings.cameraSensitivity;
       this.cameraYaw -= dx * sens;
       const ySign = this.settings.invertY ? -1 : 1;
-      this.cameraPitch = THREE.MathUtils.clamp(this.cameraPitch + dy * sens * ySign, -0.15, 0.88);
+      this.cameraPitch = THREE.MathUtils.clamp(this.cameraPitch + dy * sens * ySign, -0.1, 0.72);
     };
 
     const onPointerUp = (e: PointerEvent) => {
-      if (e.pointerId === this.activePointerId) {
+      if (this.activePointerId === null || e.pointerId === this.activePointerId) {
         this.draggingLook = false;
         this.activePointerId = null;
       }
@@ -2054,15 +2298,24 @@ export class MountainEngine {
 
     this.sunLight.position.set(
       this.playerPos.x + Math.cos(sunAngle) * 58,
-      this.playerPos.y + Math.max(16, Math.abs(sunElev) * 70),
+      this.playerPos.y + Math.max(18, Math.abs(sunElev) * 72),
       this.playerPos.z + 28
     );
     this.sunLight.target.position.copy(this.playerPos);
+    this.sunLight.target.updateMatrixWorld();
 
-    // Balanced dark navy night -> warm slate dawn -> steel-blue alpine day (no pure black or blinding white)
-    const nightSky = 0x0b1526;
-    const dawnSky = 0xa87c65;
-    const daySky = 0x7691ac;
+    this.rimLight.position.set(
+      this.playerPos.x - 40,
+      this.playerPos.y + 28,
+      this.playerPos.z - 55
+    );
+    this.rimLight.target.position.copy(this.playerPos);
+    this.rimLight.target.updateMatrixWorld();
+
+    // Balanced moonlit night -> crisp alpine dawn -> bright Himalayan sky (mountains & trail always readable)
+    const nightSky = 0x132238;
+    const dawnSky = 0xb58d76;
+    const daySky = 0x8bb2d6;
 
     if (dayFactor < 0.35) {
       _skyColor.setHex(nightSky).lerp(_fogColor.setHex(dawnSky), dayFactor / 0.35);
@@ -2070,28 +2323,28 @@ export class MountainEngine {
       _skyColor.setHex(dawnSky).lerp(_fogColor.setHex(daySky), (dayFactor - 0.35) / 0.65);
     }
 
-    let fogDensity = 0.0055;
-    let snowIntensity = 0.18;
+    let fogDensity = 0.0010;
+    let snowIntensity = 0.16;
     if (weather === 'overcast') {
-      fogDensity = 0.0075;
-      _skyColor.lerp(_fogColor.setHex(0x697c91), 0.35);
+      fogDensity = 0.0015;
+      _skyColor.lerp(_fogColor.setHex(0x7c95ad), 0.3);
     } else if (weather === 'fog') {
-      fogDensity = 0.022;
-      _skyColor.lerp(_fogColor.setHex(0x8899ab), 0.52);
+      fogDensity = 0.0040;
+      _skyColor.lerp(_fogColor.setHex(0x96abc0), 0.42);
     } else if (weather === 'snowfall') {
-      fogDensity = 0.011;
+      fogDensity = 0.0024;
       snowIntensity = 0.62;
-      _skyColor.lerp(_fogColor.setHex(0x6e8296), 0.42);
+      _skyColor.lerp(_fogColor.setHex(0x8299b0), 0.35);
     } else if (weather === 'snowstorm' || weather === 'thunder_snow') {
-      fogDensity = 0.02;
-      snowIntensity = 1.08;
-      _skyColor.lerp(_fogColor.setHex(0x4f6175), 0.62);
+      fogDensity = 0.0038;
+      snowIntensity = 1.05;
+      _skyColor.lerp(_fogColor.setHex(0x5c7188), 0.52);
     } else if (weather === 'blizzard') {
-      fogDensity = 0.032;
-      snowIntensity = 1.5;
-      _skyColor.lerp(_fogColor.setHex(0x526274), 0.72);
+      fogDensity = 0.0052;
+      snowIntensity = 1.45;
+      _skyColor.lerp(_fogColor.setHex(0x63788d), 0.58);
     } else if (weather === 'windy') {
-      fogDensity = 0.008;
+      fogDensity = 0.0017;
       snowIntensity = 0.42;
     }
 
@@ -2106,25 +2359,25 @@ export class MountainEngine {
     }
     this.lightningFlash = Math.max(0, this.lightningFlash - dt * 3.8);
     if (this.lightningFlash > 0.05) {
-      _skyColor.lerp(_fogColor.setHex(0xbcd2ea), this.lightningFlash * 0.55);
+      _skyColor.lerp(_fogColor.setHex(0xcbe0f5), this.lightningFlash * 0.55);
     }
 
     this.scene.background = _skyColor;
     this.fog.color.copy(_skyColor);
-    this.fog.density = THREE.MathUtils.damp(this.fog.density, fogDensity, 1.5, dt);
+    this.fog.density = THREE.MathUtils.damp(this.fog.density, fogDensity, 2.0, dt);
 
-    // Readable moonlight at night + soft alpine sunlight during day
-    const weatherDim = weather === 'blizzard' ? 0.58 : weather === 'snowstorm' ? 0.72 : 1.0;
-    this.sunLight.intensity = (0.62 + dayFactor * 1.35) * weatherDim + this.lightningFlash * 1.4;
+    // Readable moonlight at night + crisp alpine sunlight during day
+    const weatherDim = weather === 'blizzard' ? 0.72 : weather === 'snowstorm' ? 0.82 : 1.0;
+    this.sunLight.intensity = (0.9 + dayFactor * 1.45) * weatherDim + this.lightningFlash * 1.4;
     if (dayFactor < 0.2) {
-      _sunColor.setHex(0x9eb8d6); // silvery moonlight
+      _sunColor.setHex(0xaac4e2); // silvery moonlight
     } else if (dayFactor < 0.45) {
-      _sunColor.setHex(0xf0b589);
+      _sunColor.setHex(0xf4be94);
     } else {
-      _sunColor.setHex(0xf6ede0);
+      _sunColor.setHex(0xfff5e8);
     }
     this.sunLight.color.copy(_sunColor);
-    this.hemiLight.intensity = 0.44 + dayFactor * 0.44;
+    this.hemiLight.intensity = 0.68 + dayFactor * 0.44;
 
     if (this.starField) {
       const starMat = this.starField.material as THREE.PointsMaterial;
@@ -2197,19 +2450,23 @@ export class MountainEngine {
       this.stamina > 6 &&
       this.hunger > 10;
 
-    // Check Valley Trek & Rockfall & Flood Mission Completions
+    // Update Live Mission Progress & Check Strictly Performed Completions
     const valleyM = this.missions.find((m) => m.type === 'trek_valley');
-    if (valleyM && !valleyM.completed && this.playerPos.z < -this.level.ridgeLength * 0.16) {
-      valleyM.completed = true;
-      this.showBanner('Cleared the alpine pine valley approach');
+    if (valleyM && !valleyM.completed) {
+      const targetZ = this.level.ridgeLength * 0.16;
+      valleyM.progressCurrent = Math.min(Math.round(targetZ), Math.max(0, Math.round(-this.playerPos.z)));
+      if (this.playerPos.z < -targetZ) {
+        this.completePrimaryMission(valleyM);
+      }
     }
 
     const rockM = this.missions.find((m) => m.type === 'survive_rockfall');
     if (rockM && !rockM.completed && this.terrain.rockfallZones.length > 0) {
       const endZ = this.terrain.rockfallZones[0].zEnd;
+      const rockTarget = Math.max(1, Math.round(Math.abs(endZ - 2)));
+      rockM.progressCurrent = Math.min(rockTarget, Math.max(0, Math.round(-this.playerPos.z)));
       if (this.playerPos.z < endZ - 2) {
-        rockM.completed = true;
-        this.showBanner('Cleared the rockfall couloir safely');
+        this.completePrimaryMission(rockM);
       }
     }
 
@@ -2220,9 +2477,13 @@ export class MountainEngine {
       }
       const floodM = this.missions.find((m) => m.type === 'cross_flood');
       if (floodM && !floodM.completed && this.playerPos.z < r.zCenter - r.halfWidthZ - 2) {
-        floodM.completed = true;
-        this.showBanner('Crossed the glacial meltwater river!');
+        this.completePrimaryMission(floodM);
       }
+    }
+
+    const campM = this.missions.find((m) => m.type === 'reach_camp');
+    if (campM && !campM.completed) {
+      campM.progressCurrent = Math.min(this.level.ridgeLength, Math.max(0, Math.round(-this.playerPos.z)));
     }
 
     let inLandslide = false;
@@ -2277,8 +2538,11 @@ export class MountainEngine {
             this.awardPoints(150);
             this.awardBadge('predator_deterrent', 150);
             const wm = this.missions.find((m) => m.type === 'repel_wildlife');
-            if (wm && this.wildlifeList.every((wl) => wl.repelled)) {
-              wm.completed = true;
+            if (wm) {
+              wm.progressCurrent = this.wildlifeList.filter((wl) => wl.repelled).length;
+              if (this.wildlifeList.every((wl) => wl.repelled)) {
+                this.completePrimaryMission(wm);
+              }
             }
           } else {
             this.showBanner('Direct Ice Axe defense hit! Swing again to drive predator away!');
@@ -2694,9 +2958,11 @@ export class MountainEngine {
       if (insideShelter || nearFire) {
         this.shelterTimer += dt;
         const sm = this.missions.find((m) => m.type === 'shelter_night');
-        if (sm && !sm.completed && this.shelterTimer >= 3.2) {
-          sm.completed = true;
-          this.showBanner('Core warmth stabilized at camp/shelter!');
+        if (sm && !sm.completed) {
+          sm.progressCurrent = Math.min(3, Math.floor(this.shelterTimer));
+          if (this.shelterTimer >= 3.2) {
+            this.completePrimaryMission(sm);
+          }
         }
       }
     } else {
@@ -2801,8 +3067,11 @@ export class MountainEngine {
           this.awardPoints(70);
           this.showBanner('Cleared fallen debris barricade off the trail! (+70 pts)');
           const cm = this.missions.find((m) => m.type === 'clear_obstacle');
-          if (cm && this.obstacles.every((o) => o.cleared)) {
-            cm.completed = true;
+          if (cm) {
+            cm.progressCurrent = this.obstacles.filter((o) => o.cleared).length;
+            if (this.obstacles.every((o) => o.cleared)) {
+              this.completePrimaryMission(cm);
+            }
           }
           break;
         }
@@ -2854,7 +3123,7 @@ export class MountainEngine {
         if (w.growlCooldown <= 0) {
           w.growlCooldown = 5.5;
           audioEngine.playWildlifeGrowl();
-          this.showBanner('Snow Predator stalking! Swing Ice Axe [Q/E] or light Flare [6]!');
+          this.showBanner('Snow Predator stalking! Swing Ice Axe [Q/F] or light Flare [6]!');
         }
         _vec3.copy(this.playerPos).sub(w.pos).setY(0);
         const len = _vec3.length();
@@ -2876,7 +3145,7 @@ export class MountainEngine {
           audioEngine.playWildlifeGrowl();
           this.health = Math.max(0, this.health - 18);
           this.temperature = Math.max(0, this.temperature - 8);
-          this.showBanner('Predator lunged! (-18 Health) Strike with Ice Axe [Q/E]!');
+          this.showBanner('Predator lunged! (-18 Health) Strike with Ice Axe [Q/F]!');
           if (this.health <= 0) {
             this.triggerFailure('Overwhelmed by a Himalayan snow predator in the storm');
             return;
@@ -2914,9 +3183,9 @@ export class MountainEngine {
       this.startQte(
         'rope_break_qte',
         'ROPE SNAPPED OVER DROP!',
-        `Granite sheared your fixed line! Strike ${side === 'axe_left' ? '[Q] Left Axe' : '[E] Right Axe'} to arrest your fall!`,
+        `Granite sheared your fixed line! Strike ${side === 'axe_left' ? '[Q] Left Axe' : '[F] Right Axe'} to arrest your fall!`,
         side,
-        side === 'axe_left' ? 'Q' : 'E',
+        side === 'axe_left' ? 'Q' : 'F',
         3.6
       );
     }
@@ -2954,7 +3223,7 @@ export class MountainEngine {
         this.avalancheWallMesh.visible = false;
         this.avalancheActiveTimer = 0;
         const em = this.missions.find((m) => m.type === 'escape_hazard');
-        if (em) em.completed = true;
+        if (em) this.completePrimaryMission(em);
         this.awardPoints(150);
         this.awardBadge('avalanche_survivor', 150);
         this.showBanner('Cleared the avalanche path above the ice wall! (+150 pts)');
@@ -2995,7 +3264,7 @@ export class MountainEngine {
       if (this.playerPos.z < cave.zEnd - 4) {
         this.timedEscape = null;
         const em = this.missions.find((m) => m.type === 'escape_hazard');
-        if (em) em.completed = true;
+        if (em) this.completePrimaryMission(em);
         this.awardPoints(200);
         this.awardBadge('tunnel_runner', 200);
         this.showBanner('Escaped the collapsing glacial tunnel! (+200 pts)');
@@ -3033,7 +3302,7 @@ export class MountainEngine {
       if (progress > 0.6) {
         this.timedEscape = null;
         const em = this.missions.find((m) => m.type === 'escape_hazard');
-        if (em) em.completed = true;
+        if (em) this.completePrimaryMission(em);
         this.awardPoints(160);
         this.showBanner('Reached high ground above the collapsing glacier! (+160 pts)');
       } else if (this.timedEscape.timeRemaining <= 0) {
@@ -3107,7 +3376,7 @@ export class MountainEngine {
         this.carryingTeammate = false;
         const escortM = this.missions.find((m) => m.type === 'escort_teammate');
         if (escortM && !escortM.completed) {
-          escortM.completed = true;
+          this.completePrimaryMission(escortM);
           this.awardPoints(180);
           this.awardBadge('brothers_keeper', 180);
           this.showBanner('Teammate evacuated safely! (+180 pts)');
@@ -3256,8 +3525,11 @@ export class MountainEngine {
         this.showBanner('Recovered Oxygen Cylinder (+1 Cylinder, +30% O2)');
 
         const m = this.missions.find((ms) => ms.type === 'collect_o2');
-        if (m && this.o2CollectedCount >= this.level.requiredO2Collect) {
-          m.completed = true;
+        if (m) {
+          m.progressCurrent = Math.min(this.level.requiredO2Collect, this.o2CollectedCount);
+          if (this.o2CollectedCount >= this.level.requiredO2Collect) {
+            this.completePrimaryMission(m);
+          }
         }
       } else if (p.type === 'ration' && (dist < 2.4 || (doInteract && dist < 4.2))) {
         p.active = false;
@@ -3280,12 +3552,12 @@ export class MountainEngine {
         this.awardPoints(75);
         this.showBanner('Damaged belay anchor repaired!');
         const m = this.missions.find((ms) => ms.type === 'repair_anchor');
-        if (m) m.completed = true;
+        if (m) this.completePrimaryMission(m);
       } else if (p.type === 'npc' && doInteract && dist < 4.8) {
         p.active = false;
         audioEngine.playOxygenHiss();
         const m = this.missions.find((ms) => ms.type === 'rescue_climber');
-        if (m) m.completed = true;
+        if (m) this.completePrimaryMission(m);
 
         const needsEscort = this.missions.some((ms) => ms.type === 'escort_teammate');
         if (needsEscort) {
@@ -3311,7 +3583,7 @@ export class MountainEngine {
           this.helicopterInbound = true;
           const hm = this.missions.find((m) => m.type === 'signal_helicopter');
           if (hm && !hm.completed) {
-            hm.completed = true;
+            this.completePrimaryMission(hm);
             this.awardPoints(120);
             this.awardBadge('heli_signal', 180);
             this.showBanner('Helicopter rescue beacon confirmed!');
@@ -3329,7 +3601,7 @@ export class MountainEngine {
         }
 
         const prerequisitesDone = this.missions
-          .filter((ms) => ms.type !== 'reach_camp')
+          .filter((ms) => !ms.optional && ms.type !== 'reach_camp')
           .every((ms) => ms.completed);
 
         if (prerequisitesDone) {
@@ -3347,7 +3619,12 @@ export class MountainEngine {
           return;
         } else if (doInteract || dist < 3.6) {
           if (this.statusBannerTimer <= 0) {
-            this.showBanner('Complete all mission objectives before securing summit/camp!');
+            const pending = this.getCurrentPrimaryMission();
+            this.showBanner(
+              pending
+                ? `Complete current objective first: ${pending.label}`
+                : 'Complete all primary mission steps before securing summit/camp!'
+            );
           }
         }
       }
@@ -3361,19 +3638,33 @@ export class MountainEngine {
     this.onGameOver(snap);
   }
 
+  private snapCameraToPlayer() {
+    if (!this.terrain) return;
+    const horizDist = this.cameraZoom * Math.cos(this.cameraPitch);
+    const vertDist = this.cameraZoom * Math.sin(this.cameraPitch) + 1.25;
+    const desiredX = this.playerPos.x + Math.sin(this.cameraYaw) * horizDist;
+    const desiredZ = this.playerPos.z + Math.cos(this.cameraYaw) * horizDist;
+    const minGroundY = this.terrain.getHeightAt(desiredX, desiredZ) + 1.1;
+    const desiredY = Math.max(minGroundY, this.playerPos.y + vertDist);
+
+    this.camera.position.set(desiredX, desiredY, desiredZ);
+    const lookX = this.playerPos.x - Math.sin(this.cameraYaw) * 2.2;
+    const lookZ = this.playerPos.z - Math.cos(this.cameraYaw) * 2.2;
+    this.camera.lookAt(lookX, this.playerPos.y + 1.85, lookZ);
+  }
+
   private updateCamera(dt: number, elapsed: number) {
     if (!this.terrain) return;
 
     if (this.mode === 'menu') {
-      const angle = elapsed * 0.14;
-      const dist = 13.5;
+      const sway = Math.sin(elapsed * 0.25) * 3.8;
       _camDesired.set(
-        this.playerPos.x + Math.sin(angle) * dist,
-        this.playerPos.y + 5.2,
-        this.playerPos.z + Math.cos(angle) * dist
+        this.playerPos.x - 3.8 + sway,
+        this.playerPos.y + 2.8,
+        this.playerPos.z + 8.8
       );
       this.camera.position.lerp(_camDesired, 1 - Math.exp(-4 * dt));
-      _camTarget.set(this.playerPos.x, this.playerPos.y + 2.2, this.playerPos.z - 18);
+      _camTarget.set(this.playerPos.x, this.playerPos.y + 2.2, this.playerPos.z - 24);
       this.camera.lookAt(_camTarget);
       return;
     }
@@ -3381,38 +3672,40 @@ export class MountainEngine {
     if (this.mode === 'cutscene') {
       if (this.cutscenePreset === 'aerial_k2') {
         _camDesired.set(
-          this.playerPos.x + Math.sin(elapsed * 0.25) * 26,
-          this.playerPos.y + 38,
-          this.playerPos.z - 45
+          this.playerPos.x + Math.sin(elapsed * 0.28) * 4.5,
+          this.playerPos.y + 3.2,
+          this.playerPos.z + 8.6
         );
-        _camTarget.set(0, this.playerPos.y + 30, -this.level.ridgeLength);
+        _camTarget.set(this.playerPos.x, this.playerPos.y + 2.6, this.playerPos.z - 36);
       } else if (this.cutscenePreset === 'camp_overview') {
-        _camDesired.set(this.playerPos.x - 10, this.playerPos.y + 5.5, this.playerPos.z + 11);
-        _camTarget.set(this.playerPos.x - 2, this.playerPos.y + 1.5, this.playerPos.z + 2);
+        _camDesired.set(this.playerPos.x - 5.2, this.playerPos.y + 2.9, this.playerPos.z + 8.6);
+        _camTarget.set(this.playerPos.x - 1.2, this.playerPos.y + 1.8, this.playerPos.z - 8);
       } else if (this.cutscenePreset === 'team_prep') {
-        _camDesired.set(this.playerPos.x + 8, this.playerPos.y + 3.5, this.playerPos.z + 7);
-        _camTarget.set(this.playerPos.x, this.playerPos.y + 1.5, this.playerPos.z - 4);
+        _camDesired.set(this.playerPos.x + 4.4, this.playerPos.y + 2.5, this.playerPos.z + 6.4);
+        _camTarget.set(this.playerPos.x, this.playerPos.y + 1.7, this.playerPos.z - 10);
       } else {
-        _camDesired.set(this.playerPos.x + 2.4, this.playerPos.y + 2.1, this.playerPos.z - 3.6);
-        _camTarget.set(this.playerPos.x, this.playerPos.y + 1.45, this.playerPos.z);
+        _camDesired.set(this.playerPos.x + 2.0, this.playerPos.y + 1.9, this.playerPos.z + 3.6);
+        _camTarget.set(this.playerPos.x, this.playerPos.y + 1.6, this.playerPos.z - 6);
       }
-      this.camera.position.lerp(_camDesired, 1 - Math.exp(-3.5 * dt));
+      this.camera.position.lerp(_camDesired, 1 - Math.exp(-4 * dt));
       this.camera.lookAt(_camTarget);
       return;
     }
 
     const horizDist = this.cameraZoom * Math.cos(this.cameraPitch);
-    const vertDist = this.cameraZoom * Math.sin(this.cameraPitch) + 1.75;
+    const vertDist = this.cameraZoom * Math.sin(this.cameraPitch) + 1.25;
 
     const desiredX = this.playerPos.x + Math.sin(this.cameraYaw) * horizDist;
     const desiredZ = this.playerPos.z + Math.cos(this.cameraYaw) * horizDist;
-    const minGroundY = this.terrain.getHeightAt(desiredX, desiredZ) + 1.2;
+    const minGroundY = this.terrain.getHeightAt(desiredX, desiredZ) + 1.1;
     const desiredY = Math.max(minGroundY, this.playerPos.y + vertDist);
 
     _camDesired.set(desiredX, desiredY, desiredZ);
-    this.camera.position.lerp(_camDesired, 1 - Math.exp(-10 * dt));
+    this.camera.position.lerp(_camDesired, 1 - Math.exp(-12 * dt));
 
-    _camTarget.set(this.playerPos.x, this.playerPos.y + 1.38, this.playerPos.z);
+    const lookX = this.playerPos.x - Math.sin(this.cameraYaw) * 2.2;
+    const lookZ = this.playerPos.z - Math.cos(this.cameraYaw) * 2.2;
+    _camTarget.set(lookX, this.playerPos.y + 1.85, lookZ);
     this.camera.lookAt(_camTarget);
   }
 
@@ -3472,10 +3765,10 @@ export class MountainEngine {
         if (!p.active) continue;
         const d = p.position.distanceTo(this.playerPos);
         if (d < 4.6) {
-          if (p.type === 'o2') interactPrompt = 'Press F / Interact — Recover Oxygen Cylinder';
-          else if (p.type === 'ration') interactPrompt = 'Press F / Interact — Collect Ration & Water';
-          else if (p.type === 'anchor') interactPrompt = 'Press F / Interact — Repair Damaged Anchor';
-          else if (p.type === 'npc') interactPrompt = 'Press F / Interact — Stabilize & Evacuate Teammate';
+          if (p.type === 'o2') interactPrompt = 'Press [E] / Interact — Recover Oxygen Cylinder';
+          else if (p.type === 'ration') interactPrompt = 'Press [E] / Interact — Collect Ration & Water';
+          else if (p.type === 'anchor') interactPrompt = 'Press [E] / Interact — Repair Damaged Anchor';
+          else if (p.type === 'npc') interactPrompt = 'Press [E] / Interact — Stabilize & Evacuate Teammate';
           else if (p.type === 'helipad') {
             interactPrompt = this.helicopterInbound
               ? 'Helicopter Inbound to Helipad!'
@@ -3484,11 +3777,11 @@ export class MountainEngine {
           else if (p.type === 'midcamp') interactPrompt = 'Mid-Camp Fire — Warming Up & Recharging Headlamp';
           else if (p.type === 'checkpoint') {
             const ready = this.missions
-              .filter((m) => m.type !== 'reach_camp')
+              .filter((m) => !m.optional && m.type !== 'reach_camp')
               .every((m) => m.completed);
             interactPrompt = ready
               ? 'Camp Beacon Reached!'
-              : 'Complete all mission steps before securing summit/camp';
+              : 'Complete primary objectives before securing summit/camp';
           }
           break;
         }
@@ -3633,6 +3926,8 @@ export class MountainEngine {
       gpsCoords: `${lat}°N ${lon}°E`,
       interactPrompt,
       statusBanner: this.statusBannerTimer > 0 ? this.statusBanner : null,
+      missionNotification:
+        this.missionNotificationTimer > 0 ? this.missionNotification : null,
       activeDecision: this.activeDecision,
       activeQte: this.activeQte ? { ...this.activeQte } : null,
       timedEscape: this.timedEscape ? { ...this.timedEscape } : null,
@@ -3651,36 +3946,23 @@ export class MountainEngine {
     this.onTelemetry(this.buildTelemetrySnapshot());
   }
 
-  private afterDraw(cb: () => void) {
-    const gl = this.renderer.getContext() as WebGL2RenderingContext;
-    if (!gl || typeof gl.fenceSync !== 'function') {
-      this.frameId = window.setTimeout(cb, 80);
-      return;
-    }
-    const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
-    gl.flush();
-    const poll = () => {
+  private scheduleNextSoftwareFrame(cb: () => void) {
+    this.softwareTimerId = window.setTimeout(() => {
       if (this.disposed) return;
-      const state = sync && gl.getSyncParameter(sync, gl.SYNC_STATUS);
-      if (state === gl.UNSIGNALED) {
-        this.frameId = window.setTimeout(poll, 5);
-      } else {
-        if (sync) gl.deleteSync(sync);
-        this.frameId = window.setTimeout(cb, 80);
-      }
-    };
-    this.frameId = window.setTimeout(poll, 5);
+      cb();
+    }, 150);
   }
 
   private tick = () => {
     if (this.disposed) return;
 
-    const dt = Math.min(0.05, this.clock.getDelta());
+    const dt = Math.min(0.08, this.clock.getDelta());
     const elapsed = this.clock.elapsedTime;
 
     if (this.mode === 'playing') {
       this.elapsedTime += dt;
       if (this.statusBannerTimer > 0) this.statusBannerTimer -= dt;
+      if (this.missionNotificationTimer > 0) this.missionNotificationTimer -= dt;
       if (this.avalancheActiveTimer > 0) {
         this.avalancheActiveTimer = Math.max(0, this.avalancheActiveTimer - dt);
       }
@@ -3700,7 +3982,7 @@ export class MountainEngine {
     this.renderer.render(this.scene, this.camera);
 
     if (this.isSoftwareGl) {
-      this.afterDraw(this.tick);
+      this.scheduleNextSoftwareFrame(this.tick);
     } else {
       this.frameId = requestAnimationFrame(this.tick);
     }
@@ -3709,7 +3991,7 @@ export class MountainEngine {
   public dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
-    window.clearTimeout(this.frameId);
+    window.clearTimeout(this.softwareTimerId);
     this.cleanupListeners();
     this.clearWorld();
     this.textures.snowAlbedo.dispose();

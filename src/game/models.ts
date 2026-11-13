@@ -165,11 +165,27 @@ export function createMountaineerModel(
     torsoGroup.add(biner);
   });
 
-  // Heavy Expedition Backpack (on +Z back side)
-  const packBody = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.52, 0.22), darkGearMat);
+  // Grounding contact shadow beneath boots
+  const contactShadowMat = new THREE.MeshBasicMaterial({
+    color: 0x050912,
+    transparent: true,
+    opacity: 0.38,
+    depthWrite: false,
+  });
+  const contactShadow = new THREE.Mesh(new THREE.CircleGeometry(0.42, 16), contactShadowMat);
+  contactShadow.rotation.x = -Math.PI / 2;
+  contactShadow.position.y = 0.02;
+  bodyGroup.add(contactShadow);
+
+  // Heavy Expedition Backpack (on +Z back side) with high-visibility alpine trim
+  const packBody = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.52, 0.22), suitMat);
   packBody.position.set(0, 0.34, 0.24);
   packBody.castShadow = true;
   torsoGroup.add(packBody);
+
+  const packStraps = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.08, 0.23), accentMat);
+  packStraps.position.set(0, 0.34, 0.24);
+  torsoGroup.add(packStraps);
 
   const packLid = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.1, 0.24), accentMat);
   packLid.position.set(0, 0.6, 0.23);
@@ -448,28 +464,27 @@ export function createPineTreeModel(): THREE.Group {
   const group = new THREE.Group();
   const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3f3024, roughness: 0.92 });
   const needleMat = new THREE.MeshStandardMaterial({ color: 0x243832, roughness: 0.88 });
-  const snowTipMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.8 });
+  const snowTipMat = new THREE.MeshStandardMaterial({ color: 0xdbe5ef, roughness: 0.82 });
 
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 2.4, 7), trunkMat);
-  trunk.position.y = 1.2;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 3.0, 7), trunkMat);
+  trunk.position.y = 1.5;
   trunk.castShadow = true;
   group.add(trunk);
 
   [0, 1, 2].forEach((tier) => {
-    const cone = new THREE.Mesh(
-      new THREE.ConeGeometry(1.7 - tier * 0.4, 2.2 - tier * 0.25, 7),
-      needleMat
-    );
-    cone.position.y = 2.6 + tier * 1.35;
+    const baseR = 1.65 - tier * 0.38;
+    const h = 2.2 - tier * 0.24;
+    const yCenter = 2.75 + tier * 1.25;
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(baseR, h, 8), needleMat);
+    cone.position.y = yCenter;
     cone.castShadow = true;
     group.add(cone);
 
-    const cap = new THREE.Mesh(
-      new THREE.ConeGeometry(1.1 - tier * 0.28, 0.65, 7),
-      snowTipMat
-    );
-    cap.position.y = 3.25 + tier * 1.35;
-    group.add(cap);
+    if (tier === 2) {
+      const cap = new THREE.Mesh(new THREE.ConeGeometry(baseR * 0.58, h * 0.54, 8), snowTipMat);
+      cap.position.y = yCenter + h * 0.24;
+      group.add(cap);
+    }
   });
   return group;
 }

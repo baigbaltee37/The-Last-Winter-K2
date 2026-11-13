@@ -1,5 +1,6 @@
-export type GraphicsQuality = 'low' | 'medium' | 'high';
+export type GraphicsQuality = 'low' | 'medium' | 'high' | 'auto';
 export type TouchControlsMode = 'auto' | 'always' | 'off';
+export type HudLayoutMode = 'full' | 'compact' | 'hidden';
 
 export type WeatherType =
   | 'clear'
@@ -43,6 +44,7 @@ export interface GameSettings {
   invertY: boolean;
   touchControls: TouchControlsMode;
   voiceOver: boolean;
+  hudMode: HudLayoutMode;
 }
 
 export interface CharacterProfile {
@@ -112,6 +114,9 @@ export interface MissionStep {
     | 'reach_checkpoint'
     | 'reach_camp';
   completed: boolean;
+  optional?: boolean;
+  progressCurrent?: number;
+  progressTarget?: number;
 }
 
 export interface CutsceneBeat {
@@ -298,6 +303,7 @@ export interface GameTelemetry {
   gpsCoords: string;
   interactPrompt: string | null;
   statusBanner: string | null;
+  missionNotification: { title: string; subtitle: string } | null;
   activeDecision: StoryDecision | null;
   activeQte: ActiveQteEvent | null;
   timedEscape: TimedEscapeState | null;
@@ -327,4 +333,6 @@ export interface SaveProgress {
   unlockedBadges: string[];
   unlockedOutfits: string[];
   gearUpgrades: GearUpgradeLevels;
+  completedMissions: Record<number, string[]>;
+  savedInventory: Record<string, { quantity: number; durability: number }>;
 }

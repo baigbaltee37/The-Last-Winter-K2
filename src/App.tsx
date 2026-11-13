@@ -120,6 +120,7 @@ const INITIAL_TELEMETRY: GameTelemetry = {
   gpsCoords: '35.8800°N 76.5130°E',
   interactPrompt: null,
   statusBanner: null,
+  missionNotification: null,
   activeDecision: null,
   activeQte: null,
   timedEscape: null,
@@ -259,19 +260,20 @@ export default function App() {
     const mount = canvasMountRef.current;
     if (!mount) return;
 
-    const engine = new MountainEngine(mount, settings, selectedLevel, selectedCharacter, {
-      onTelemetry: (t) => setTelemetry(t),
-      onLevelComplete: (t) => completeCbRef.current(t),
-      onGameOver: (t) => gameOverCbRef.current(t),
-    });
-    engineRef.current = engine;
-    engine.loadExpedition(
+    const engine = new MountainEngine(
+      mount,
+      settings,
       selectedLevel,
       selectedCharacter,
-      'menu',
+      {
+        onTelemetry: (t) => setTelemetry(t),
+        onLevelComplete: (t) => completeCbRef.current(t),
+        onGameOver: (t) => gameOverCbRef.current(t),
+      },
       save.routeChoice,
       save.gearUpgrades
     );
+    engineRef.current = engine;
 
     return () => {
       engine.dispose();
@@ -618,6 +620,7 @@ export default function App() {
       {screen === 'paused' && !telemetry.activeDecision && (
         <PauseModal
           level={selectedLevel}
+          telemetry={telemetry}
           onResume={() => {
             engineRef.current?.setMode('playing');
             setScreen('playing');

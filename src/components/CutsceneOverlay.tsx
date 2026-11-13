@@ -28,6 +28,7 @@ export function CutsceneOverlay({
     onBeatChange(currentBeat.cameraPreset);
     audioEngine.speakSubtitle(currentBeat.subtitle, voiceOver);
 
+    const durationMs = Math.min(currentBeat.durationSec, 3.6) * 1000;
     const timer = window.setTimeout(() => {
       if (beatIndex + 1 < beats.length) {
         setBeatIndex(beatIndex + 1);
@@ -35,7 +36,7 @@ export function CutsceneOverlay({
         audioEngine.stopSpeech();
         onFinish();
       }
-    }, currentBeat.durationSec * 1000);
+    }, durationMs);
 
     return () => {
       window.clearTimeout(timer);
@@ -62,7 +63,7 @@ export function CutsceneOverlay({
           }}
           className="px-3.5 py-1.5 rounded-md bg-slate-900 hover:bg-slate-800 border border-white/15 text-xs text-slate-200 flex items-center gap-1.5 transition-colors"
         >
-          <span>Skip Briefing</span>
+          <span>Skip Intro</span>
           <FastForward className="w-3.5 h-3.5" />
         </button>
       </div>

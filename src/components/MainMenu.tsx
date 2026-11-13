@@ -143,9 +143,12 @@ export function MainMenu({
           >
             <span className="flex items-center gap-2.5">
               <Play className="w-4 h-4 fill-current" />
-              <span>{hasProgress ? 'Continue Expedition' : 'New Expedition'}</span>
+              <span>Start Game</span>
             </span>
-            <ChevronRight className="w-4 h-4" />
+            <span className="flex items-center gap-1 text-xs font-mono-num">
+              <span>{selectedLevel.code}</span>
+              <ChevronRight className="w-4 h-4" />
+            </span>
           </button>
 
           {hasProgress && (
@@ -154,8 +157,8 @@ export function MainMenu({
               onClick={onStartNewExpedition}
               className="w-full py-2.5 px-4 rounded-lg bg-slate-900/95 hover:bg-slate-800 border border-white/15 text-slate-100 font-medium text-sm flex items-center justify-between transition-colors"
             >
-              <span>New Expedition (Stage 1)</span>
-            <span className="font-mono-num text-xs text-slate-400">4,200m</span>
+              <span>New Game (Stage 1)</span>
+              <span className="font-mono-num text-xs text-slate-400">4,200m</span>
             </button>
           )}
 

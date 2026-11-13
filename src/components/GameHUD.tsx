@@ -103,12 +103,32 @@ export function GameHUD({
   const countOf = (id: string) =>
     telemetry.equipment.find((e) => e.id === id)?.quantity ?? 0;
 
+  const primaryMissions = telemetry.missions.filter((m) => !m.optional);
+  const currentPrimaryIdx = primaryMissions.findIndex((m) => !m.completed);
+  const currentObjective =
+    currentPrimaryIdx >= 0
+      ? primaryMissions[currentPrimaryIdx]
+      : primaryMissions[primaryMissions.length - 1];
+  const stepNumber =
+    currentPrimaryIdx >= 0 ? currentPrimaryIdx + 1 : primaryMissions.length;
+  const progressPct =
+    currentObjective && currentObjective.progressTarget && currentObjective.progressTarget > 0
+      ? Math.min(
+          100,
+          Math.round(
+            ((currentObjective.progressCurrent ?? 0) / currentObjective.progressTarget) * 100
+          )
+        )
+      : currentObjective?.completed
+        ? 100
+        : 0;
+
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-3 sm:p-4">
-      {/* Top Row: Vitals | Compass, GPS & Missions | MiniMap & Pause */}
+      {/* Top Row: Vitals | Single Current Objective & Compass | MiniMap & Pause */}
       <div className="flex items-start justify-between gap-3">
         {/* Top-Left: Survival Vitals */}
-        <div className="pointer-events-auto w-48 sm:w-56 bg-[#09111e]/92 border border-white/12 rounded-lg p-2.5 space-y-1.5">
+        <div className="pointer-events-auto w-44 sm:w-52 bg-[#09111e]/88 border border-white/12 rounded-lg p-2 space-y-1">
           <VitalBar
             label="Health"
             value={telemetry.health}
@@ -264,9 +284,9 @@ export function GameHUD({
           )}
         </div>
 
-        {/* Top-Center: Compass, GPS, Missions, Timed Escape */}
-        <div className="hidden md:flex flex-col items-center gap-2 max-w-xl">
-          <div className="bg-[#09111e]/92 border border-white/12 rounded-lg px-4 py-1.5 flex items-center gap-3 text-xs">
+        {/* Top-Center: Compass, Single Current Objective & Notifications */}
+        <div className="hidden md:flex flex-col items-center gap-1.5 max-w-xl">
+          <div className="bg-[#09111e]/88 border border-white/12 rounded-lg px-3.5 py-1.5 flex items-center gap-2.5 text-xs whitespace-nowrap">
             <div className="flex items-center gap-1.5 text-amber-300 font-mono-num">
               <Compass className="w-3.5 h-3.5" />
               <span>
@@ -283,7 +303,7 @@ export function GameHUD({
             <span className="text-slate-600">·</span>
             <div className="flex items-center gap-1.5 text-slate-200">
               <Wind className="w-3.5 h-3.5 text-sky-300" />
-              <span className="whitespace-nowrap">{WEATHER_LABELS[telemetry.weather] || telemetry.weather}</span>
+              <span>{WEATHER_LABELS[telemetry.weather] || telemetry.weather}</span>
               <span className="font-mono-num text-slate-400">{telemetry.windSpeedKmh} km/h</span>
             </div>
             <span className="text-slate-600">·</span>
@@ -292,33 +312,43 @@ export function GameHUD({
             <span className="font-mono-num text-amber-300">+{telemetry.sessionPoints} PTS</span>
           </div>
 
-          <div className="bg-[#09111e]/88 border border-white/10 rounded-lg px-3.5 py-2 w-full">
-            <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
-              <span className="font-medium text-slate-200">
-                {level.code} · {level.name} · <span className="text-sky-300">{telemetry.terrainSurface}</span>
-              </span>
-              <span className="font-mono-num">
-                {telemetry.variationLabel} · {telemetry.timeOfDayLabel} · {telemetry.gpsCoords}
-              </span>
-            </div>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-4 gap-y-0.5">
-              {telemetry.missions.map((m) => (
+          {currentObjective && (
+            <div className="bg-[#09111e]/88 border border-amber-400/25 rounded-lg px-3.5 py-2 w-full">
+              <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+                <span className="font-semibold text-amber-300 uppercase tracking-wider">
+                  Objective {stepNumber}/{primaryMissions.length} · {level.code}
+                </span>
+                <span className="font-mono-num text-slate-400">
+                  {telemetry.timeOfDayLabel} · Pause [P] for Optional Goals
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3 text-xs font-medium text-slate-100">
+                <span className="truncate">{currentObjective.label}</span>
+                {currentObjective.progressTarget !== undefined && (
+                  <span className="font-mono-num text-[11px] text-sky-300 shrink-0">
+                    {currentObjective.progressCurrent ?? 0}/{currentObjective.progressTarget}
+                  </span>
+                )}
+              </div>
+              <div className="mt-1.5 h-1 w-full rounded-full bg-slate-800 overflow-hidden">
                 <div
-                  key={m.id}
-                  className={`flex items-center gap-1.5 text-[11px] ${
-                    m.completed ? 'text-emerald-400 line-through' : 'text-slate-200'
-                  }`}
-                >
-                  <Check
-                    className={`w-3 h-3 shrink-0 ${
-                      m.completed ? 'text-emerald-400' : 'text-slate-600'
-                    }`}
-                  />
-                  <span className="truncate">{m.label}</span>
-                </div>
-              ))}
+                  className="h-full bg-amber-400 transition-all duration-200"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
             </div>
-          </div>
+          )}
+
+          {telemetry.missionNotification && (
+            <div className="bg-emerald-950/92 border border-emerald-400/50 rounded-lg px-3.5 py-1.5 text-center shadow-lg">
+              <div className="text-[10px] font-bold tracking-wider text-emerald-300 uppercase">
+                {telemetry.missionNotification.title}
+              </div>
+              <div className="text-xs text-white font-medium">
+                {telemetry.missionNotification.subtitle}
+              </div>
+            </div>
+          )}
 
           {telemetry.timedEscape && telemetry.timedEscape.active && (
             <div className="w-full bg-rose-950/95 border border-rose-400/60 rounded-lg px-4 py-2 space-y-1">
@@ -442,21 +472,28 @@ export function GameHUD({
 
       {/* Bottom: Equipment Quick-Bar & Controls Hint */}
       <div className="flex flex-col items-center gap-2">
-        <div className="md:hidden bg-[#09111e]/92 border border-white/12 rounded-lg px-3 py-1.5 flex items-center gap-2.5 text-[11px] font-mono-num">
-          <span className="text-amber-300">
-            {compassLabel(telemetry.compassHeadingDeg)} {telemetry.compassHeadingDeg}°
-          </span>
-          <span className="text-slate-500">·</span>
-          <span className="text-white font-semibold">{telemetry.altitude.toLocaleString()}m</span>
-          <span className="text-slate-500">·</span>
-          <span className="text-slate-300">{telemetry.distanceToCheckpoint}m</span>
-          {telemetry.timedEscape?.active && (
-            <>
-              <span className="text-slate-500">·</span>
-              <span className="text-rose-300 font-semibold">
-                {telemetry.timedEscape.timeRemaining.toFixed(0)}s
-              </span>
-            </>
+        <div className="md:hidden bg-[#09111e]/92 border border-white/12 rounded-lg px-3 py-1.5 flex flex-col items-center gap-1 text-[11px]">
+          <div className="flex items-center gap-2.5 font-mono-num">
+            <span className="text-amber-300">
+              {compassLabel(telemetry.compassHeadingDeg)} {telemetry.compassHeadingDeg}°
+            </span>
+            <span className="text-slate-500">·</span>
+            <span className="text-white font-semibold">{telemetry.altitude.toLocaleString()}m</span>
+            <span className="text-slate-500">·</span>
+            <span className="text-slate-300">{telemetry.distanceToCheckpoint}m</span>
+            {telemetry.timedEscape?.active && (
+              <>
+                <span className="text-slate-500">·</span>
+                <span className="text-rose-300 font-semibold">
+                  {telemetry.timedEscape.timeRemaining.toFixed(0)}s
+                </span>
+              </>
+            )}
+          </div>
+          {currentObjective && (
+            <div className="text-[10px] text-amber-200 text-center max-w-[260px] truncate">
+              Obj {stepNumber}/{primaryMissions.length}: {currentObjective.label}
+            </div>
           )}
         </div>
 

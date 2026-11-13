@@ -248,7 +248,7 @@ export function createInitialEquipment(levelId: number): EquipmentItem[] {
       weightKg: 0.65,
       durability: 100,
       usable: false,
-      description: 'Left (Q) & Right (E) axes for vertical ice climbing & emergency predator defense.',
+      description: 'Left (Q) & Right (F) axes for vertical ice climbing & emergency predator defense.',
     },
     {
       id: 'flare',
@@ -665,7 +665,7 @@ export const LEVELS: LevelConfig[] = [
     hasEmergencyShelter: true,
     requiredO2Collect: 1,
     storyBrief:
-      'MISSION 4 — WILDLIFE & FLOOD: Hungry Himalayan snow predators stalk the storm-darkened gorge while flash meltwaters rise. Strike back with your Ice Axe (Q/E) or light an Emergency Flare (6) to drive them off and rescue the trapped porter!',
+      'MISSION 4 — WILDLIFE & FLOOD: Hungry Himalayan snow predators stalk the storm-darkened gorge while flash meltwaters rise. Strike back with your Ice Axe (Q/F) or light an Emergency Flare (6) to drive them off and rescue the trapped porter!',
     completionQuote:
       'Steel ice axes and blazing flare light kept the storm predators at bay while you saved your porter.',
     difficultyLabel: 'Legendary · Day → Night',
@@ -674,7 +674,7 @@ export const LEVELS: LevelConfig[] = [
         title: 'MISSION 4: STALKED IN THE GORGE',
         speaker: 'Pasang Tamang',
         subtitle:
-          'Snow predators have moved into the lower canyon! Keep your axes ready [Q/E] and ignite a flare [6] if they charge.',
+          'Snow predators have moved into the lower canyon! Keep your axes ready [Q/F] and ignite a flare [6] if they charge.',
         durationSec: 4.5,
         cameraPreset: 'camp_overview',
       },
@@ -1032,12 +1032,13 @@ export const LEVELS: LevelConfig[] = [
 ];
 
 export const DEFAULT_SETTINGS: GameSettings = {
-  graphics: 'medium',
+  graphics: 'auto',
   masterVolume: 0.72,
   cameraSensitivity: 1.0,
   invertY: false,
   touchControls: 'auto',
   voiceOver: true,
+  hudMode: 'full',
 };
 
 export const DEFAULT_SAVE: SaveProgress = {
@@ -1060,6 +1061,8 @@ export const DEFAULT_SAVE: SaveProgress = {
     o2Regulator: 0,
     ropeLine: 0,
   },
+  completedMissions: {},
+  savedInventory: {},
 };
 
 export const CUSTOM_SUIT_COLORS = [

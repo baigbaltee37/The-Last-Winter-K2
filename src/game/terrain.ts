@@ -73,7 +73,7 @@ export class KarakoramTerrain {
     this.level = level;
     this.route = route;
     this.variationSeed = variationSeed;
-    this.length = level.ridgeLength + 90;
+    this.length = level.ridgeLength + 150;
     this.midCampZ = -level.ridgeLength * 0.56;
 
     const phase = level.id * 1.37 + (route === 'cesen' ? 0.75 : 0) + variationSeed * 0.22;
@@ -432,7 +432,7 @@ export class KarakoramTerrain {
     const geo = new THREE.PlaneGeometry(this.width, this.length, segX, segZ);
     geo.rotateX(-Math.PI / 2);
 
-    const zOffset = -this.length / 2 + 25;
+    const zOffset = -this.length / 2 + 65;
     const pos = geo.attributes.position;
     const colors = new Float32Array(pos.count * 3);
 
@@ -491,6 +491,9 @@ export class KarakoramTerrain {
         }
       }
 
+      const trailMix = distRidge < 2.9 ? 1 - distRidge / 2.9 : 0;
+      const trailPathColor = new THREE.Color(0x9fb4c8);
+
       if (inCrev) {
         tmpColor.copy(crevColor);
       } else if (inRiver) {
@@ -501,12 +504,14 @@ export class KarakoramTerrain {
         const snowPatch = this.smoothNoise(vx * 0.12, vz * 0.12);
         tmpColor.copy(valleyEarth).lerp(windSnowColor, snowPatch * 0.45);
         if (ny < 0.78) tmpColor.lerp(rockColor, 0.7);
+        if (trailMix > 0) tmpColor.lerp(new THREE.Color(0x8c877c), trailMix * 0.55);
       } else if (ny < 0.74 || distRidge > 12.8) {
         const rockMix = THREE.MathUtils.clamp((0.82 - ny) * 2.8, 0, 1);
         tmpColor.copy(windSnowColor).lerp(rockColor, rockMix);
       } else {
         const shade = this.smoothNoise(vx * 0.15, vz * 0.15);
         tmpColor.copy(snowColor).lerp(windSnowColor, shade * 0.45);
+        if (trailMix > 0) tmpColor.lerp(trailPathColor, trailMix * 0.42);
       }
 
       colors[i * 3] = tmpColor.r;

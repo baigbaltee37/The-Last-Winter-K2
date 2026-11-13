@@ -1,9 +1,10 @@
-import { Award, Home, Play, RotateCcw, Skull } from 'lucide-react';
+import { Award, CheckCircle2, Circle, Home, Play, RotateCcw, Skull } from 'lucide-react';
 import { BADGES, LEVELS } from '../game/data';
 import { GameTelemetry, LevelConfig } from '../game/types';
 
 interface PauseModalProps {
   level: LevelConfig;
+  telemetry: GameTelemetry;
   onResume: () => void;
   onRestart: () => void;
   onExitMenu: () => void;
@@ -11,20 +12,91 @@ interface PauseModalProps {
 
 export function PauseModal({
   level,
+  telemetry,
   onResume,
   onRestart,
   onExitMenu,
 }: PauseModalProps) {
+  const primaryMissions = telemetry.missions.filter((m) => !m.optional);
+  const optionalMissions = telemetry.missions.filter((m) => m.optional);
+  const currentPrimary =
+    primaryMissions.find((m) => !m.completed) ||
+    primaryMissions[primaryMissions.length - 1];
+
   return (
     <div className="fixed inset-0 z-30 bg-[#05080f]/82 flex items-center justify-center p-4">
-      <div className="w-full max-w-sm bg-[#0b121e] border border-white/15 rounded-xl p-6 space-y-4">
+      <div className="w-full max-w-md bg-[#0b121e] border border-white/15 rounded-xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
         <div>
           <div className="text-xs text-amber-400 font-mono-num">{level.code}</div>
           <h2 className="font-display text-3xl font-bold text-white">Expedition Paused</h2>
           <p className="text-xs text-slate-400 mt-1">{level.name}</p>
         </div>
 
-        <div className="flex flex-col gap-2.5 pt-2">
+        {/* Active Primary Objective & Completed Primary Steps */}
+        {primaryMissions.length > 0 && (
+          <div className="p-3 rounded-lg bg-slate-900/85 border border-white/10 space-y-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-amber-300">
+              Primary Mission
+            </div>
+            {primaryMissions
+              .filter((m) => m.completed || m.id === currentPrimary?.id)
+              .map((m) => (
+                <div
+                  key={m.id}
+                  className={`flex items-start justify-between gap-2 text-xs ${
+                    m.completed ? 'text-emerald-300' : 'text-slate-100 font-medium'
+                  }`}
+                >
+                  <span className="flex items-start gap-2">
+                    {m.completed ? (
+                      <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0 text-emerald-400" />
+                    ) : (
+                      <Circle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-400" />
+                    )}
+                    <span>{m.label}</span>
+                  </span>
+                  {m.progressTarget !== undefined && (
+                    <span className="font-mono-num text-[11px] text-slate-400 shrink-0">
+                      {m.progressCurrent ?? 0}/{m.progressTarget}
+                    </span>
+                  )}
+                </div>
+              ))}
+          </div>
+        )}
+
+        {/* Optional Objectives */}
+        {optionalMissions.length > 0 && (
+          <div className="p-3 rounded-lg bg-slate-900/65 border border-white/10 space-y-2">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-sky-300">
+              Optional Objectives
+            </div>
+            {optionalMissions.map((m) => (
+              <div
+                key={m.id}
+                className={`flex items-start justify-between gap-2 text-xs ${
+                  m.completed ? 'text-emerald-300' : 'text-slate-300'
+                }`}
+              >
+                <span className="flex items-start gap-2">
+                  {m.completed ? (
+                    <CheckCircle2 className="w-3.5 h-3.5 mt-0.5 shrink-0 text-emerald-400" />
+                  ) : (
+                    <Circle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-slate-500" />
+                  )}
+                  <span>{m.label}</span>
+                </span>
+                {m.progressTarget !== undefined && (
+                  <span className="font-mono-num text-[11px] text-slate-400 shrink-0">
+                    {m.progressCurrent ?? 0}/{m.progressTarget}
+                  </span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="flex flex-col gap-2.5 pt-1">
           <button
             type="button"
             onClick={onResume}
