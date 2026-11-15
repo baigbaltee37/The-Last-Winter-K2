@@ -4,19 +4,18 @@ import {
   ArrowDown,
   ArrowUp,
   Axe,
-  Backpack,
+  Camera,
   Flame,
+  Flashlight,
   Hand,
-  Map as MapIcon,
   Mountain,
   MoveHorizontal,
   Unlink,
-  Zap,
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
 import { PlayerInputState } from '../game/MountainEngine';
-import { ActiveQteEvent, RopeRigState } from '../game/types';
+import { ActiveQteEvent, CameraMode, RopeRigState } from '../game/types';
 
 interface TouchControlsProps {
   inputRef: React.MutableRefObject<PlayerInputState>;
@@ -29,10 +28,10 @@ interface TouchControlsProps {
   onFlare: () => void;
   onPushObstacle: () => void;
   onZoom: (delta: number) => void;
-  onToggleInventory: () => void;
-  onToggleMap: () => void;
-  inventoryOpen: boolean;
-  mapOpen: boolean;
+  onToggleCamera: () => void;
+  cameraMode: CameraMode;
+  onToggleHeadlamp: () => void;
+  headlampOn: boolean;
   isClimbing: boolean;
   isCrouching: boolean;
   isSprinting: boolean;
@@ -54,10 +53,10 @@ export function TouchControls({
   onFlare,
   onPushObstacle,
   onZoom,
-  onToggleInventory,
-  onToggleMap,
-  inventoryOpen,
-  mapOpen,
+  onToggleCamera,
+  cameraMode,
+  onToggleHeadlamp,
+  headlampOn,
   isClimbing,
   isCrouching,
   isSprinting,
@@ -110,44 +109,9 @@ export function TouchControls({
 
   return (
     <div className="pointer-events-none fixed inset-x-0 bottom-0 z-20 flex items-end justify-between gap-2 px-2.5 pb-2.5 sm:px-5 sm:pb-4">
-      {/* Left Thumb Zone: Virtual Movement Joystick + Camera Zoom & Quick Map/Pack */}
+      {/* Left Thumb Zone: Virtual Movement Joystick + Camera Zoom */}
       <div className="pointer-events-auto flex items-end gap-1.5 sm:gap-2 shrink-0">
         <div className="flex flex-col items-start gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                onToggleInventory();
-              }}
-              aria-label="Touch Inventory"
-              className={`min-w-[44px] min-h-[44px] px-2.5 rounded-lg border text-[10px] font-semibold flex flex-col items-center justify-center gap-0.5 transition-colors ${
-                inventoryOpen
-                  ? 'bg-amber-500 text-slate-950 border-amber-300'
-                  : 'bg-[#09111e]/90 border-white/15 text-slate-100 active:bg-slate-700'
-              }`}
-            >
-              <Backpack className="w-3.5 h-3.5" />
-              <span>Pack</span>
-            </button>
-            <button
-              type="button"
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                onToggleMap();
-              }}
-              aria-label="Touch Map"
-              className={`min-w-[44px] min-h-[44px] px-2.5 rounded-lg border text-[10px] font-semibold flex flex-col items-center justify-center gap-0.5 transition-colors ${
-                mapOpen
-                  ? 'bg-sky-500 text-slate-950 border-sky-300'
-                  : 'bg-[#09111e]/90 border-white/15 text-slate-100 active:bg-slate-700'
-              }`}
-            >
-              <MapIcon className="w-3.5 h-3.5" />
-              <span>Map</span>
-            </button>
-          </div>
-
           <div
             ref={padRef}
             onPointerDown={(e) => {
@@ -201,6 +165,42 @@ export function TouchControls({
             aria-label="Zoom Out"
           >
             <ZoomOut className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onToggleCamera();
+            }}
+            className={`w-11 h-11 rounded-lg border flex flex-col items-center justify-center text-[10px] font-semibold ${
+              cameraMode === 'first_person'
+                ? 'bg-sky-500 text-slate-950 border-sky-300'
+                : 'bg-[#09111e]/88 border-white/15 text-slate-200 active:bg-slate-700'
+            }`}
+            aria-label="Touch Switch Camera"
+          >
+            <Camera className="w-3.5 h-3.5" />
+            <span>{cameraMode === 'first_person' ? '1P' : '3P'}</span>
+          </button>
+
+          <button
+            type="button"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              onToggleHeadlamp();
+            }}
+            className={`w-11 h-11 rounded-lg border flex flex-col items-center justify-center text-[10px] font-semibold ${
+              headlampOn
+                ? 'bg-amber-400 text-slate-950 border-amber-200'
+                : 'bg-[#09111e]/88 border-white/15 text-slate-200 active:bg-slate-700'
+            }`}
+            aria-label="Touch Headlamp"
+          >
+            <Flashlight className="w-3.5 h-3.5" />
+            <span>Lamp</span>
           </button>
         </div>
       </div>
@@ -280,7 +280,7 @@ export function TouchControls({
                 : 'bg-[#09111e]/90 text-slate-200 border-white/20'
             }`}
           >
-            <Zap className="w-3.5 h-3.5" />
+            <ArrowUp className="w-3.5 h-3.5 rotate-45" />
             <span>Sprint</span>
           </button>
 

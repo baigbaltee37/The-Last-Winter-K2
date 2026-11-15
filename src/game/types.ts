@@ -1,6 +1,9 @@
 export type GraphicsQuality = 'low' | 'medium' | 'high' | 'auto';
 export type TouchControlsMode = 'auto' | 'always' | 'off';
 export type HudLayoutMode = 'full' | 'compact' | 'hidden';
+export type CameraMode = 'third_person' | 'first_person';
+export type TimeOfDayMode = 'auto' | 'day' | 'night' | 'dynamic';
+export type StartingTimePreset = 'expedition' | 'sunrise' | 'midday' | 'sunset' | 'midnight';
 
 export type WeatherType =
   | 'clear'
@@ -45,6 +48,9 @@ export interface GameSettings {
   touchControls: TouchControlsMode;
   voiceOver: boolean;
   hudMode: HudLayoutMode;
+  cameraMode: CameraMode;
+  timeMode: TimeOfDayMode;
+  startTimePreset: StartingTimePreset;
 }
 
 export interface CharacterProfile {
@@ -267,6 +273,10 @@ export interface GameTelemetry {
   windSpeedKmh: number;
   ambientTempC: number;
   timeOfDayLabel: string;
+  timeOfDay: number;
+  timeMode: TimeOfDayMode;
+  visibilityMeters: number;
+  cameraMode: CameraMode;
   isNight: boolean;
   headlampOn: boolean;
   isClimbing: boolean;

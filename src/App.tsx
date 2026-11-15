@@ -11,11 +11,17 @@ import {
   DEFAULT_SAVE,
   DEFAULT_SETTINGS,
   GEAR_UPGRADE_COSTS,
-  INITIAL_TEAM_ROSTER,
   LEVELS,
   UNLOCKABLE_OUTFITS,
 } from './game/data';
 import { MountainEngine, PlayerInputState } from './game/MountainEngine';
+import {
+  hydrateAsyncStorage,
+  loadSaveSync,
+  loadSettingsSync,
+  persistSave,
+  persistSettings,
+} from './game/storage';
 import {
   CharacterProfile,
   CutsceneBeat,
@@ -23,44 +29,10 @@ import {
   GameSettings,
   GameTelemetry,
   GearUpgradeLevels,
+  HudLayoutMode,
   LevelConfig,
   SaveProgress,
 } from './game/types';
-
-const SAVE_KEY = 'last_winter_k2_sim_save_v3';
-const SETTINGS_KEY = 'last_winter_k2_sim_settings_v3';
-
-function loadSave(): SaveProgress {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return DEFAULT_SAVE;
-    const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_SAVE,
-      ...parsed,
-      teamRoster: parsed.teamRoster || INITIAL_TEAM_ROSTER,
-      gearUpgrades: {
-        ...DEFAULT_SAVE.gearUpgrades,
-        ...(parsed.gearUpgrades || {}),
-      },
-      unlockedBadges: parsed.unlockedBadges || [],
-      unlockedOutfits: parsed.unlockedOutfits || DEFAULT_SAVE.unlockedOutfits,
-      expeditionPoints: parsed.expeditionPoints ?? 0,
-    };
-  } catch {
-    return DEFAULT_SAVE;
-  }
-}
-
-function loadSettings(): GameSettings {
-  try {
-    const raw = localStorage.getItem(SETTINGS_KEY);
-    if (!raw) return DEFAULT_SETTINGS;
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
-  } catch {
-    return DEFAULT_SETTINGS;
-  }
-}
 
 const INITIAL_TELEMETRY: GameTelemetry = {
   health: 100,
@@ -84,6 +56,10 @@ const INITIAL_TELEMETRY: GameTelemetry = {
   windSpeedKmh: 32,
   ambientTempC: -12,
   timeOfDayLabel: 'Alpine Dawn',
+  timeOfDay: 0.34,
+  timeMode: 'auto',
+  visibilityMeters: 420,
+  cameraMode: 'third_person',
   isNight: false,
   headlampOn: false,
   isClimbing: false,
@@ -152,17 +128,27 @@ export default function App() {
     pushQueued: false,
   });
 
-  const [save, setSave] = useState<SaveProgress>(loadSave);
-  const [settings, setSettings] = useState<GameSettings>(loadSettings);
+  const [save, setSave] = useState<SaveProgress>(loadSaveSync);
+  const [settings, setSettings] = useState<GameSettings>(loadSettingsSync);
   const [selectedLevelId, setSelectedLevelId] = useState<number>(
-    () => loadSave().highestUnlockedLevel || 1
+    () => loadSaveSync().highestUnlockedLevel || 1
   );
   const [screen, setScreen] = useState<GameScreen>('menu');
   const [telemetry, setTelemetry] = useState<GameTelemetry>(INITIAL_TELEMETRY);
-  const [isTouchDevice, setIsTouchDevice] = useState(false);
+  const [isTouchDevice, setIsTouchDevice] = useState<boolean>(() =>
+    typeof window !== 'undefined'
+      ? 'ontouchstart' in window || navigator.maxTouchPoints > 0
+      : false
+  );
+  const [inventoryOpen, setInventoryOpen] = useState(false);
+  const [mapOpen, setMapOpen] = useState(false);
 
   const screenRef = useRef<GameScreen>(screen);
   screenRef.current = screen;
+  const inventoryOpenRef = useRef(inventoryOpen);
+  inventoryOpenRef.current = inventoryOpen;
+  const mapOpenRef = useRef(mapOpen);
+  mapOpenRef.current = mapOpen;
 
   const selectedLevel = useMemo(
     () => LEVELS.find((l) => l.id === selectedLevelId) || LEVELS[0],
@@ -181,29 +167,62 @@ export default function App() {
     return base;
   }, [save.selectedCharacterId, save.customName, save.customSuitColor]);
 
+  // Hydrate async IndexedDB / Capacitor Preferences on first mount
   useEffect(() => {
-    try {
-      localStorage.setItem(SAVE_KEY, JSON.stringify(save));
-    } catch {
-      // ignore
-    }
+    void hydrateAsyncStorage().then((res) => {
+      if (res.save) {
+        setSave(res.save);
+        setSelectedLevelId(res.save.highestUnlockedLevel || 1);
+      }
+      if (res.settings) {
+        setSettings(res.settings);
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    persistSave(save);
   }, [save]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-    } catch {
-      // ignore
-    }
+    persistSettings(settings);
   }, [settings]);
 
+  // Dynamic input-mode switching between Touch (mobile/tablet) and Keyboard/Mouse (PC)
   useEffect(() => {
-    const hasTouch = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-    setIsTouchDevice(hasTouch);
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType === 'touch') {
+        setIsTouchDevice(true);
+      } else if (e.pointerType === 'mouse' && navigator.maxTouchPoints === 0) {
+        setIsTouchDevice(false);
+      }
+    };
+    window.addEventListener('pointerdown', onPointerDown, { passive: true });
+    return () => window.removeEventListener('pointerdown', onPointerDown);
   }, []);
+
+  const handleProgressSync = useCallback(
+    (data: {
+      levelId: number;
+      completedMissionIds: string[];
+      inventory: Record<string, { quantity: number; durability: number }>;
+    }) => {
+      setSave((prev) => ({
+        ...prev,
+        completedMissions: {
+          ...prev.completedMissions,
+          [data.levelId]: data.completedMissionIds,
+        },
+        savedInventory: data.inventory,
+      }));
+    },
+    []
+  );
 
   const handleLevelComplete = useCallback(
     (finalTelemetry: GameTelemetry) => {
+      setInventoryOpen(false);
+      setMapOpen(false);
       setTelemetry(finalTelemetry);
       setScreen('level_complete');
 
@@ -232,6 +251,13 @@ export default function App() {
         const mergedBadges = Array.from(
           new Set([...prev.unlockedBadges, ...(finalTelemetry.newlyEarnedBadges || [])])
         );
+        const nextInventory: Record<string, { quantity: number; durability: number }> = {};
+        for (const item of finalTelemetry.equipment) {
+          nextInventory[item.id] = {
+            quantity: item.quantity,
+            durability: Math.round(item.durability),
+          };
+        }
         return {
           ...prev,
           completedLevels: completed,
@@ -240,6 +266,11 @@ export default function App() {
           teamRoster: updatedRoster,
           expeditionPoints: prev.expeditionPoints + (finalTelemetry.sessionPoints || 0),
           unlockedBadges: mergedBadges,
+          completedMissions: {
+            ...prev.completedMissions,
+            [lvlId]: finalTelemetry.missions.filter((m) => m.completed).map((m) => m.id),
+          },
+          savedInventory: nextInventory,
         };
       });
     },
@@ -247,10 +278,40 @@ export default function App() {
   );
 
   const handleGameOver = useCallback((finalTelemetry: GameTelemetry) => {
+    setInventoryOpen(false);
+    setMapOpen(false);
     setTelemetry(finalTelemetry);
     setScreen('game_over');
   }, []);
 
+  const cycleHudMode = useCallback(() => {
+    const order: HudLayoutMode[] = ['full', 'compact', 'hidden'];
+    setSettings((prev) => {
+      const idx = order.indexOf(prev.hudMode);
+      const next = order[(idx + 1) % order.length];
+      return { ...prev, hudMode: next };
+    });
+  }, []);
+
+  const toggleCameraMode = useCallback(() => {
+    const next = engineRef.current?.toggleCameraMode();
+    if (next) {
+      setSettings((prev) => ({ ...prev, cameraMode: next }));
+    }
+  }, []);
+
+  const cycleTimeMode = useCallback(() => {
+    const order: GameSettings['timeMode'][] = ['auto', 'day', 'night', 'dynamic'];
+    setSettings((prev) => {
+      const idx = order.indexOf(prev.timeMode || 'auto');
+      const next = order[(idx + 1) % order.length];
+      engineRef.current?.setTimeMode(next);
+      return { ...prev, timeMode: next };
+    });
+  }, []);
+
+  const progressSyncCbRef = useRef(handleProgressSync);
+  progressSyncCbRef.current = handleProgressSync;
   const completeCbRef = useRef(handleLevelComplete);
   completeCbRef.current = handleLevelComplete;
   const gameOverCbRef = useRef(handleGameOver);
@@ -269,9 +330,11 @@ export default function App() {
         onTelemetry: (t) => setTelemetry(t),
         onLevelComplete: (t) => completeCbRef.current(t),
         onGameOver: (t) => gameOverCbRef.current(t),
+        onProgressSync: (d) => progressSyncCbRef.current(d),
       },
       save.routeChoice,
-      save.gearUpgrades
+      save.gearUpgrades,
+      save.savedInventory
     );
     engineRef.current = engine;
 
@@ -286,7 +349,7 @@ export default function App() {
     engineRef.current?.updateSettings(settings);
   }, [settings]);
 
-  // Keyboard Controls
+  // Unified PC Keyboard Controls
   useEffect(() => {
     const pressed = new Set<string>();
 
@@ -302,8 +365,8 @@ export default function App() {
       engine.input.moveX = mx;
       engine.input.moveY = my;
       engine.input.sprint = pressed.has('ShiftLeft') || pressed.has('ShiftRight');
-      engine.input.climb = pressed.has('KeyC');
-      engine.input.crouch = pressed.has('KeyV') || pressed.has('ControlLeft');
+      engine.input.crouch = pressed.has('KeyC') || pressed.has('ControlLeft');
+      engine.input.climb = pressed.has('KeyV');
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
@@ -311,6 +374,13 @@ export default function App() {
 
       if (e.code === 'Escape' || e.code === 'KeyP') {
         if (screenRef.current === 'playing') {
+          if (e.code === 'Escape' && (inventoryOpenRef.current || mapOpenRef.current)) {
+            setInventoryOpen(false);
+            setMapOpen(false);
+            return;
+          }
+          setInventoryOpen(false);
+          setMapOpen(false);
           engineRef.current?.setMode('paused');
           setScreen('paused');
         } else if (screenRef.current === 'paused') {
@@ -322,21 +392,46 @@ export default function App() {
 
       if (screenRef.current !== 'playing') return;
 
+      // UI Drawer/HUD Hotkeys
+      if (e.code === 'KeyI' && !e.repeat) {
+        setMapOpen(false);
+        setInventoryOpen((v) => !v);
+        return;
+      }
+      if (e.code === 'KeyM' && !e.repeat) {
+        setInventoryOpen(false);
+        setMapOpen((v) => !v);
+        return;
+      }
+      if (e.code === 'KeyH' && !e.repeat) {
+        cycleHudMode();
+        return;
+      }
+      if (e.code === 'KeyT' && !e.repeat) {
+        toggleCameraMode();
+        return;
+      }
+      if (e.code === 'F5') {
+        e.preventDefault();
+        if (!e.repeat) toggleCameraMode();
+        return;
+      }
+
       pressed.add(e.code);
       syncMovement();
 
       if (e.code === 'Space') {
         e.preventDefault();
         engineRef.current?.triggerJump();
+      } else if (e.code === 'KeyE') {
+        engineRef.current?.triggerInteract();
       } else if (e.code === 'KeyQ') {
         engineRef.current?.triggerLeftIceAxe();
-      } else if (e.code === 'KeyE') {
+      } else if (e.code === 'KeyF') {
         engineRef.current?.triggerRightIceAxe();
       } else if (e.code === 'KeyR') {
         if (e.shiftKey) engineRef.current?.triggerRecoverRope();
         else engineRef.current?.triggerRopeStep();
-      } else if (e.code === 'KeyF') {
-        engineRef.current?.triggerInteract();
       } else if (e.code === 'KeyX') {
         engineRef.current?.triggerPushObstacle();
       } else if (e.code === 'Digit1') {
@@ -376,15 +471,18 @@ export default function App() {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, []);
+  }, [cycleHudMode, toggleCameraMode]);
 
   const launchStage = (
     level: LevelConfig,
     withCutscene: boolean,
     charOverride?: CharacterProfile,
-    upgradesOverride?: GearUpgradeLevels
+    upgradesOverride?: GearUpgradeLevels,
+    inventoryOverride?: Record<string, { quantity: number; durability: number }>
   ) => {
     audioEngine.init();
+    setInventoryOpen(false);
+    setMapOpen(false);
     setSelectedLevelId(level.id);
     setSave((prev) => ({
       ...prev,
@@ -396,7 +494,9 @@ export default function App() {
       charOverride || selectedCharacter,
       startMode,
       save.routeChoice,
-      upgradesOverride || save.gearUpgrades
+      upgradesOverride || save.gearUpgrades,
+      undefined,
+      inventoryOverride ?? save.savedInventory
     );
     setScreen(startMode);
   };
@@ -454,7 +554,9 @@ export default function App() {
       char,
       'menu',
       save.routeChoice,
-      save.gearUpgrades
+      save.gearUpgrades,
+      undefined,
+      save.savedInventory
     );
   };
 
@@ -526,8 +628,10 @@ export default function App() {
               unlockedBadges: prev.unlockedBadges,
               unlockedOutfits: prev.unlockedOutfits,
               gearUpgrades: prev.gearUpgrades,
+              completedMissions: {},
+              savedInventory: {},
             }));
-            launchStage(LEVELS[0], true, selectedCharacter, save.gearUpgrades);
+            launchStage(LEVELS[0], true, selectedCharacter, save.gearUpgrades, {});
           }}
           onContinueExpedition={(lvl) => launchStage(lvl, true)}
           onSelectLevel={(lvl) => {
@@ -558,7 +662,9 @@ export default function App() {
               CHARACTERS[0],
               'menu',
               DEFAULT_SAVE.routeChoice,
-              DEFAULT_SAVE.gearUpgrades
+              DEFAULT_SAVE.gearUpgrades,
+              undefined,
+              {}
             );
           }}
         />
@@ -579,6 +685,8 @@ export default function App() {
             telemetry={telemetry}
             level={selectedLevel}
             onPause={() => {
+              setInventoryOpen(false);
+              setMapOpen(false);
               engineRef.current?.setMode('paused');
               setScreen('paused');
             }}
@@ -591,6 +699,20 @@ export default function App() {
             onQteAction={() => engineRef.current?.triggerQteResponse()}
             onDecision={handleDecision}
             showTouchControls={showTouchControls}
+            inventoryOpen={inventoryOpen}
+            onToggleInventory={() => {
+              setMapOpen(false);
+              setInventoryOpen((v) => !v);
+            }}
+            mapOpen={mapOpen}
+            onToggleMap={() => {
+              setInventoryOpen(false);
+              setMapOpen((v) => !v);
+            }}
+            hudMode={settings.hudMode}
+            onCycleHudMode={cycleHudMode}
+            onToggleCamera={toggleCameraMode}
+            onCycleTimeMode={cycleTimeMode}
           />
           {showTouchControls && (
             <TouchControls
@@ -604,6 +726,10 @@ export default function App() {
               onFlare={() => engineRef.current?.useEquipment('flare')}
               onPushObstacle={() => engineRef.current?.triggerPushObstacle()}
               onZoom={(d) => engineRef.current?.adjustZoom(d)}
+              onToggleCamera={toggleCameraMode}
+              cameraMode={telemetry.cameraMode}
+              onToggleHeadlamp={() => engineRef.current?.toggleHeadlamp()}
+              headlampOn={telemetry.headlampOn}
               isClimbing={telemetry.isClimbing}
               isCrouching={telemetry.isCrouching}
               isSprinting={telemetry.isSprinting}

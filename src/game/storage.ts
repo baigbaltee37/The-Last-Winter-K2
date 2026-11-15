@@ -101,6 +101,9 @@ export function normalizeSettings(raw: Partial<GameSettings> | null | undefined)
     ...raw,
     graphics: raw.graphics || DEFAULT_SETTINGS.graphics,
     hudMode: raw.hudMode || DEFAULT_SETTINGS.hudMode,
+    cameraMode: raw.cameraMode || DEFAULT_SETTINGS.cameraMode,
+    timeMode: raw.timeMode || DEFAULT_SETTINGS.timeMode,
+    startTimePreset: raw.startTimePreset || DEFAULT_SETTINGS.startTimePreset,
   };
 }
 

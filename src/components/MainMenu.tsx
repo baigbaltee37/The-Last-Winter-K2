@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   ChevronRight,
   Compass,
+  Eye,
   Lock,
   Play,
   RotateCcw,
@@ -24,12 +25,16 @@ import {
   UNLOCKABLE_OUTFITS,
 } from '../game/data';
 import {
+  CameraMode,
   CharacterProfile,
   GameSettings,
   GearUpgradeLevels,
   GraphicsQuality,
+  HudLayoutMode,
   LevelConfig,
   SaveProgress,
+  StartingTimePreset,
+  TimeOfDayMode,
   TouchControlsMode,
 } from '../game/types';
 
@@ -80,11 +85,11 @@ export function MainMenu({
     LEVELS.find((l) => l.id === save.highestUnlockedLevel) || LEVELS[0];
 
   return (
-    <div className="fixed inset-0 z-20 flex flex-col justify-between p-6 sm:p-10 pointer-events-none">
+    <div className="fixed inset-0 z-20 flex flex-col justify-between p-5 sm:p-10 pointer-events-none overflow-y-auto">
       <div className="fixed inset-y-0 left-0 w-full md:w-[560px] bg-gradient-to-r from-[#060910]/96 via-[#060910]/80 to-transparent pointer-events-none" />
 
       {/* Top Header */}
-      <div className="relative z-10 flex items-center justify-between pointer-events-auto">
+      <div className="relative z-10 flex items-center justify-between gap-2 pointer-events-auto">
         <div className="text-xs text-slate-300 tracking-wide flex flex-wrap items-center gap-x-2 gap-y-1">
           <span>Story Mode · Legendary Difficulty</span>
           <span className="text-slate-500">·</span>
@@ -101,24 +106,24 @@ export function MainMenu({
           className="px-3 py-1.5 rounded-md bg-[#0b121e]/90 border border-white/15 text-xs text-slate-200 hover:bg-slate-800 flex items-center gap-1.5 transition-colors whitespace-nowrap"
         >
           <BookOpen className="w-3.5 h-3.5 text-sky-400" />
-          <span>Manual & Architecture</span>
+          <span>Controls & Manual</span>
         </button>
       </div>
 
       {/* Main Title & Navigation Stack */}
-      <div className="relative z-10 my-auto max-w-md pointer-events-auto">
-        <p className="text-xs font-medium text-amber-400 tracking-widest mb-2">
-          Pakistan · Karakoram Winter Expedition
+      <div className="relative z-10 my-auto max-w-md pointer-events-auto py-3">
+        <p className="text-xs font-medium text-amber-400 tracking-widest mb-1.5 uppercase">
+          Pakistan · Karakoram Winter Expedition · Beyond The Summit
         </p>
-        <h1 className="font-display text-5xl sm:text-6xl font-bold tracking-tight text-white leading-[0.94] mb-3">
+        <h1 className="font-display text-4xl sm:text-6xl font-bold tracking-tight text-white leading-[0.94] mb-2.5">
           THE LAST WINTER K2
         </h1>
-        <p className="text-sm text-slate-300 leading-relaxed mb-5 max-w-sm">
-          Survive the mountain. Conquer your fear. Outrun avalanches, repel storm predators, evacuate wounded teammates, and conquer the 8,611m Death Zone.
+        <p className="text-xs sm:text-sm text-slate-300 leading-relaxed mb-4 max-w-sm">
+          Beyond the Summit: climb in first-person or third-person across day, sunset, and moonlit night storms in the 8,611m Karakoram Death Zone.
         </p>
 
         {/* Active Loadout Summary */}
-        <div className="mb-5 pb-4 border-b border-white/10 text-xs text-slate-300 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+        <div className="mb-4 pb-3 border-b border-white/10 text-xs text-slate-300 flex flex-wrap items-center gap-x-2.5 gap-y-1">
           <span className="text-white font-medium">{selectedLevel.name}</span>
           <span className="text-slate-500">·</span>
           <span className="font-mono-num text-sky-300">
@@ -133,13 +138,13 @@ export function MainMenu({
         </div>
 
         {/* Navigation Buttons */}
-        <div className="flex flex-col gap-2.5 max-w-xs">
+        <div className="flex flex-col gap-2 max-w-xs">
           <button
             type="button"
             onClick={() =>
               hasProgress ? onContinueExpedition(selectedLevel) : onStartNewExpedition()
             }
-            className="w-full py-3 px-4 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-sm flex items-center justify-between transition-colors"
+            className="w-full py-2.5 px-4 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-sm flex items-center justify-between transition-colors"
           >
             <span className="flex items-center gap-2.5">
               <Play className="w-4 h-4 fill-current" />
@@ -155,7 +160,7 @@ export function MainMenu({
             <button
               type="button"
               onClick={onStartNewExpedition}
-              className="w-full py-2.5 px-4 rounded-lg bg-slate-900/95 hover:bg-slate-800 border border-white/15 text-slate-100 font-medium text-sm flex items-center justify-between transition-colors"
+              className="w-full py-2 px-4 rounded-lg bg-slate-900/95 hover:bg-slate-800 border border-white/15 text-slate-100 font-medium text-sm flex items-center justify-between transition-colors"
             >
               <span>New Game (Stage 1)</span>
               <span className="font-mono-num text-xs text-slate-400">4,200m</span>
@@ -165,7 +170,7 @@ export function MainMenu({
           <button
             type="button"
             onClick={() => setModal('mountains')}
-            className="w-full py-2.5 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
+            className="w-full py-2 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
           >
             <span className="flex items-center gap-2.5">
               <Compass className="w-4 h-4 text-sky-400" />
@@ -179,7 +184,7 @@ export function MainMenu({
           <button
             type="button"
             onClick={() => setModal('characters')}
-            className="w-full py-2.5 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
+            className="w-full py-2 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
           >
             <span className="flex items-center gap-2.5">
               <User className="w-4 h-4 text-amber-400" />
@@ -193,7 +198,7 @@ export function MainMenu({
           <button
             type="button"
             onClick={() => setModal('armory')}
-            className="w-full py-2.5 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
+            className="w-full py-2 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
           >
             <span className="flex items-center gap-2.5">
               <Wrench className="w-4 h-4 text-emerald-400" />
@@ -207,7 +212,7 @@ export function MainMenu({
           <button
             type="button"
             onClick={() => setModal('records')}
-            className="w-full py-2.5 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
+            className="w-full py-2 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
           >
             <span className="flex items-center gap-2.5">
               <Award className="w-4 h-4 text-amber-300" />
@@ -221,7 +226,7 @@ export function MainMenu({
           <button
             type="button"
             onClick={() => setModal('settings')}
-            className="w-full py-2.5 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
+            className="w-full py-2 px-4 rounded-lg bg-[#0d1522]/90 hover:bg-slate-800 border border-white/12 text-slate-100 text-sm flex items-center justify-between transition-colors"
           >
             <span className="flex items-center gap-2.5">
               <SettingsIcon className="w-4 h-4 text-slate-300" />
@@ -232,7 +237,7 @@ export function MainMenu({
         </div>
 
         {hasProgress && (
-          <p className="mt-3 text-xs text-slate-400">
+          <p className="mt-2.5 text-xs text-slate-400">
             Next unlocked stage: <span className="text-sky-300">{continueLevel.name}</span>
           </p>
         )}
@@ -240,9 +245,9 @@ export function MainMenu({
 
       {/* Footer Note */}
       <div className="relative z-10 text-[11px] text-slate-400 flex items-center gap-3 pointer-events-auto">
-        <span>Third-Person 3D Survival</span>
+        <span>1st & 3rd-Person 3D Mountaineering</span>
         <span>·</span>
-        <span>Supports Desktop & Android Touch Controls</span>
+        <span>Dynamic Day/Night Cycle · Desktop & Android Touch</span>
       </div>
 
       {/* MODALS */}
@@ -255,8 +260,8 @@ export function MainMenu({
                 {modal === 'characters' && 'Select Mountaineer'}
                 {modal === 'armory' && 'Base Camp Armory & Gear Upgrades'}
                 {modal === 'records' && 'Expedition Records, Badges & Roster'}
-                {modal === 'settings' && 'Graphics, Audio & Controls'}
-                {modal === 'guide' && 'Field Manual & Technical Guide'}
+                {modal === 'settings' && 'Graphics, Audio, HUD & Controls'}
+                {modal === 'guide' && 'Controls & Field Manual'}
               </h2>
               <button
                 type="button"
@@ -717,10 +722,10 @@ export function MainMenu({
                   <div>
                     <div className="text-sm font-medium text-white mb-2 flex items-center gap-2">
                       <Sliders className="w-4 h-4 text-sky-400" />
-                      <span>Graphics Quality (Android Optimization)</span>
+                      <span>Graphics Quality (Hardware Auto-Scaling)</span>
                     </div>
-                    <div className="grid grid-cols-3 gap-2">
-                      {(['low', 'medium', 'high'] as GraphicsQuality[]).map((q) => (
+                    <div className="grid grid-cols-4 gap-2">
+                      {(['auto', 'low', 'medium', 'high'] as GraphicsQuality[]).map((q) => (
                         <button
                           key={q}
                           type="button"
@@ -732,6 +737,117 @@ export function MainMenu({
                           }`}
                         >
                           {q}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-medium text-white mb-2">
+                      Camera Perspective [T / F5]
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {(
+                        [
+                          { id: 'third_person', label: 'Third-Person Follow' },
+                          { id: 'first_person', label: 'First-Person Helmet' },
+                        ] as { id: CameraMode; label: string }[]
+                      ).map((cam) => (
+                        <button
+                          key={cam.id}
+                          type="button"
+                          onClick={() => onUpdateSettings({ ...settings, cameraMode: cam.id })}
+                          className={`py-2 px-3 rounded-lg border text-xs font-medium transition-colors ${
+                            settings.cameraMode === cam.id
+                              ? 'bg-sky-500 text-slate-950 border-sky-400'
+                              : 'bg-slate-900 text-slate-200 border-white/10 hover:bg-slate-800'
+                          }`}
+                        >
+                          {cam.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-medium text-white mb-2">
+                      Day & Night Lighting System
+                    </div>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
+                      {(
+                        [
+                          { id: 'auto', label: 'Stage Default' },
+                          { id: 'day', label: 'Day Mode' },
+                          { id: 'night', label: 'Night Mode' },
+                          { id: 'dynamic', label: 'Dynamic 24h' },
+                        ] as { id: TimeOfDayMode; label: string }[]
+                      ).map((tm) => (
+                        <button
+                          key={tm.id}
+                          type="button"
+                          onClick={() => onUpdateSettings({ ...settings, timeMode: tm.id })}
+                          className={`py-2 px-2.5 rounded-lg border text-xs font-medium transition-colors ${
+                            settings.timeMode === tm.id
+                              ? 'bg-amber-500 text-slate-950 border-amber-400'
+                              : 'bg-slate-900 text-slate-200 border-white/10 hover:bg-slate-800'
+                          }`}
+                        >
+                          {tm.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {(settings.timeMode === 'auto' || settings.timeMode === 'dynamic') && (
+                      <div>
+                        <div className="text-xs text-slate-400 mb-1.5">Starting Time of Day</div>
+                        <div className="grid grid-cols-5 gap-1.5">
+                          {(
+                            [
+                              { id: 'expedition', label: 'Stage' },
+                              { id: 'sunrise', label: 'Sunrise' },
+                              { id: 'midday', label: 'Midday' },
+                              { id: 'sunset', label: 'Sunset' },
+                              { id: 'midnight', label: 'Night' },
+                            ] as { id: StartingTimePreset; label: string }[]
+                          ).map((preset) => (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              onClick={() =>
+                                onUpdateSettings({ ...settings, startTimePreset: preset.id })
+                              }
+                              className={`py-1.5 px-2 rounded-md border text-[11px] font-medium transition-colors ${
+                                settings.startTimePreset === preset.id
+                                  ? 'bg-sky-500 text-slate-950 border-sky-400'
+                                  : 'bg-slate-900 text-slate-300 border-white/10 hover:bg-slate-800'
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <div className="text-sm font-medium text-white mb-2 flex items-center gap-2">
+                      <Eye className="w-4 h-4 text-sky-400" />
+                      <span>In-Game HUD Density [H]</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['full', 'compact', 'hidden'] as HudLayoutMode[]).map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => onUpdateSettings({ ...settings, hudMode: mode })}
+                          className={`py-2 px-3 rounded-lg border text-xs capitalize font-medium transition-colors ${
+                            settings.hudMode === mode
+                              ? 'bg-amber-500 text-slate-950 border-amber-400'
+                              : 'bg-slate-900 text-slate-200 border-white/10 hover:bg-slate-800'
+                          }`}
+                        >
+                          {mode}
                         </button>
                       ))}
                     </div>
@@ -851,27 +967,39 @@ export function MainMenu({
               {modal === 'guide' && (
                 <div className="space-y-4 text-sm text-slate-300 leading-relaxed">
                   <div>
+                    <h3 className="text-base font-semibold text-white mb-1.5">
+                      1. PC Keyboard & Mouse Controls
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs bg-slate-900/75 p-3 rounded-lg border border-white/10">
+                      <div><strong>WASD / Arrows:</strong> Move & Traverse</div>
+                      <div><strong>Mouse Drag / Wheel:</strong> Orbit Camera & Zoom</div>
+                      <div><strong>Shift:</strong> Sprint</div>
+                      <div><strong>Space:</strong> Jump Crevasses</div>
+                      <div><strong>C / Ctrl:</strong> Crouch / Cover / Balance</div>
+                      <div><strong>V:</strong> Ice Wall Climb Mode</div>
+                      <div><strong>Q / F:</strong> Left & Right Ice Axes / Defense</div>
+                      <div><strong>E:</strong> Interact / Rescue / Repair</div>
+                      <div><strong>X:</strong> Shove Debris Obstacle</div>
+                      <div><strong>R / Shift+R:</strong> Rig / Pull Climbing Rope</div>
+                      <div><strong>T / F5:</strong> Switch 1st-Person / 3rd-Person</div>
+                      <div><strong>1 – 6:</strong> O2, Ration, Lamp, Water, Meds, Flare</div>
+                      <div><strong>I / M / H / Esc:</strong> Pack / Map / HUD Mode / Pause</div>
+                    </div>
+                  </div>
+                  <div>
                     <h3 className="text-base font-semibold text-white mb-1">
-                      1. Hardcore Action-Adventure Controls
+                      2. Android Landscape Touch Controls
                     </h3>
                     <p>
-                      Move with <strong>WASD</strong> or the Android <strong>Joystick</strong>. Hold <strong>Shift</strong> to sprint out of collapsing avalanches or ice caves, press <strong>Space</strong> to jump crevasses, and hold <strong>C</strong> on vertical ice faces while alternating <strong>Q (Left Ice Axe)</strong> and <strong>E (Right Ice Axe)</strong> for upward surges or emergency defense against stalking snow predators. Press <strong>X</strong> to shove fallen rock/ice obstacles off the trail, <strong>F</strong> to stabilize or evacuate wounded teammates, <strong>R</strong> to place pitons and rig climbing ropes (<strong>Shift+R</strong> to recover), and hold <strong>V / Ctrl (Crouch)</strong> behind boulders during rockfall. Watch Quick-Time Reflex prompts closely when ropes snap or seracs break!
+                      Use the lower-left <strong>Virtual Joystick</strong> to move, swipe upper screen space to rotate the third-person camera, and use the lower-right tactile pads for <strong>Axe L/R, Jump, Sprint, Crouch, Climb, Rope, Interact, Push, and Flare</strong>. Quick <strong>Pack</strong> and <strong>Map</strong> buttons sit above the left joystick.
                     </p>
                   </div>
                   <div>
                     <h3 className="text-base font-semibold text-white mb-1">
-                      2. Survival, Emergency Flares & Pack (19 Items)
+                      3. Survival Systems & Offline Storage
                     </h3>
                     <p>
-                      Monitor Health, Oxygen, Stamina, Ice Grip, Core Warmth, Headlamp Battery, Altitude Headache, Food, Water, Fatigue, and Pack Weight (kg). Press <strong>1</strong> for Oxygen, <strong>2</strong> for Rations, <strong>3</strong> for Headlamp, <strong>4</strong> for Water, <strong>5</strong> for First Aid, and <strong>6</strong> to ignite an <strong>Emergency Magnesium Flare</strong> (repels wildlife, lights dark terrain, and guides Rescue Helicopters). Open <strong>Pack (19 Items)</strong> to pitch your bivy tent, sleep at camps, swap spare headlamp cells, or repair crampons.
-                    </p>
-                  </div>
-                  <div>
-                    <h3 className="text-base font-semibold text-white mb-1">
-                      3. Android Mobile Packaging (Capacitor / PWA)
-                    </h3>
-                    <p>
-                      This codebase is built with Vite + React + Three.js (`npm run build` outputs a pure static bundle in `dist/`). To wrap it as a native Android APK: run <code>npm install @capacitor/core @capacitor/cli @capacitor/android</code>, run <code>npx cap init &quot;THE LAST WINTER K2&quot; com.karakoram.k2</code>, run <code>npm run build && npx cap add android && npx cap copy</code>, then build the signed APK in Android Studio.
+                      Progress, gear upgrades, unlocked outfits, and Expedition Pack inventory persist automatically across web sessions (`localStorage` + `IndexedDB`) and native Capacitor Android builds.
                     </p>
                   </div>
                 </div>

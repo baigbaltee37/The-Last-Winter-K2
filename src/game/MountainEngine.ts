@@ -11,6 +11,7 @@ import {
   createCampfireModel,
   createCoverBoulderModel,
   createEmergencyShelterModel,
+  createFirstPersonRig,
   createFlareEffectModel,
   createHelicopterModel,
   createIceCaveModel,
@@ -24,6 +25,7 @@ import {
   createSupplyCacheModel,
   createTentCampModel,
   createWildlifeModel,
+  FirstPersonRig,
   HelicopterRig,
   MountaineerRig,
   WildlifeRig,
@@ -31,6 +33,7 @@ import {
 import { AnchorSlot, KarakoramTerrain } from './terrain';
 import {
   ActiveQteEvent,
+  CameraMode,
   CharacterProfile,
   CutsceneBeat,
   EquipmentItem,
@@ -42,8 +45,10 @@ import {
   MissionStep,
   RopeRigState,
   RouteChoice,
+  StartingTimePreset,
   StoryDecision,
   TimedEscapeState,
+  TimeOfDayMode,
   WeatherType,
 } from './types';
 
@@ -133,9 +138,24 @@ export class MountainEngine {
   private sunLight: THREE.DirectionalLight;
   private hemiLight: THREE.HemisphereLight;
   private rimLight: THREE.DirectionalLight;
+  private headlampLight: THREE.SpotLight;
   private fog: THREE.FogExp2;
 
   private worldGroup = new THREE.Group();
+  private skyDome: THREE.Mesh | null = null;
+  private skyUniforms = {
+    uZenithColor: { value: new THREE.Color(0x1f3d66) },
+    uHorizonColor: { value: new THREE.Color(0x8bb2d6) },
+    uSunColor: { value: new THREE.Color(0xfff1d6) },
+    uSunDir: { value: new THREE.Vector3(0.4, 0.7, -0.5).normalize() },
+    uMoonDir: { value: new THREE.Vector3(-0.4, 0.55, -0.6).normalize() },
+    uDayFactor: { value: 0.9 },
+    uSunsetFactor: { value: 0.0 },
+    uNightFactor: { value: 0.1 },
+    uCloudDensity: { value: 0.35 },
+    uTime: { value: 0 },
+    uLightning: { value: 0 },
+  };
   private starField: THREE.Points | null = null;
   private snowParticles: THREE.Points | null = null;
   private snowPositions: Float32Array | null = null;
@@ -143,12 +163,16 @@ export class MountainEngine {
   private snowCount = 0;
 
   private terrain: KarakoramTerrain | null = null;
+  private terrainMat: THREE.MeshStandardMaterial | null = null;
   private playerRig: MountaineerRig | null = null;
+  private firstPersonRig: FirstPersonRig | null = null;
+  private cameraMode: CameraMode = 'third_person';
   private props: InteractiveProp[] = [];
   private bridges: SnowBridgeRuntime[] = [];
   private boulders: HazardBoulder[] = [];
   private rivers: RiverRuntime[] = [];
   private coverBoulders: THREE.Vector3[] = [];
+  private solidColliders: { x: number; z: number; radius: number }[] = [];
   private wildlifeList: WildlifeRuntime[] = [];
   private obstacles: MovableObstacleRuntime[] = [];
   private beaconFlag: THREE.Mesh | null = null;
@@ -256,6 +280,8 @@ export class MountainEngine {
   // Environment / Hazards / Action Events state
   private elapsedTime = 0;
   private timeOfDay = 0.34;
+  private visibilityMeters = 420;
+  private nightHintShown = false;
   private weatherIndex = 0;
   private weatherTimer = 0;
   private avalancheTimer = 18;
@@ -365,13 +391,26 @@ export class MountainEngine {
     const aspect =
       (container.clientWidth || window.innerWidth) /
       (container.clientHeight || window.innerHeight);
-    const farDist =
-      effectiveInitQuality === 'low' ? 1050 : effectiveInitQuality === 'medium' ? 1400 : 1650;
-    this.camera = new THREE.PerspectiveCamera(58, aspect, 0.25, farDist);
+    const farDist = this.isSoftwareGl
+      ? 680
+      : effectiveInitQuality === 'low'
+        ? 1050
+        : effectiveInitQuality === 'medium'
+          ? 1400
+          : 1650;
+    this.camera = new THREE.PerspectiveCamera(58, aspect, 0.14, farDist);
+    this.camera.rotation.order = 'YXZ';
+    this.scene.add(this.camera);
+    this.cameraMode = initialSettings.cameraMode || 'third_person';
 
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-    pmrem.dispose();
+    if (!this.isSoftwareGl) {
+      const pmrem = new THREE.PMREMGenerator(this.renderer);
+      this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+      pmrem.dispose();
+      this.scene.environmentIntensity = 0.82;
+    }
+
+    this.buildSkyDome(farDist);
 
     this.hemiLight = new THREE.HemisphereLight(0xaad0f2, 0x3b495c, 0.85);
     this.scene.add(this.hemiLight);
@@ -397,6 +436,10 @@ export class MountainEngine {
     this.rimLight.position.set(-40, 28, -55);
     this.scene.add(this.rimLight);
     this.scene.add(this.rimLight.target);
+
+    this.headlampLight = new THREE.SpotLight(0xeef6ff, 0, 66, Math.PI / 4.3, 0.54, 1.12);
+    this.scene.add(this.headlampLight);
+    this.scene.add(this.headlampLight.target);
 
     this.scene.add(this.worldGroup);
 
@@ -458,6 +501,9 @@ export class MountainEngine {
 
   public updateSettings(newSettings: GameSettings) {
     const prevEff = this.resolveEffectiveGraphics(this.settings.graphics);
+    const prevTimeMode = this.settings.timeMode;
+    const prevPreset = this.settings.startTimePreset;
+    const prevCam = this.cameraMode;
     this.settings = newSettings;
     const nextEff = this.resolveEffectiveGraphics(newSettings.graphics);
     audioEngine.setVolume(newSettings.masterVolume);
@@ -465,16 +511,129 @@ export class MountainEngine {
     const shadowsEnabled = !this.isSoftwareGl && nextEff !== 'low';
     this.renderer.shadowMap.enabled = shadowsEnabled;
     this.sunLight.castShadow = shadowsEnabled;
-    this.camera.far = nextEff === 'low' ? 1050 : nextEff === 'medium' ? 1400 : 1650;
+    this.camera.far = this.isSoftwareGl
+      ? 680
+      : nextEff === 'low'
+        ? 1050
+        : nextEff === 'medium'
+          ? 1400
+          : 1650;
     this.camera.updateProjectionMatrix();
     if (prevEff !== nextEff && this.level && this.character) {
       this.rebuildSnowParticles();
     }
+    if (newSettings.cameraMode && newSettings.cameraMode !== prevCam) {
+      this.setCameraMode(newSettings.cameraMode, false);
+    }
+    if (
+      this.level &&
+      (newSettings.timeMode !== prevTimeMode || newSettings.startTimePreset !== prevPreset)
+    ) {
+      this.applyTimeModeSelection(newSettings.timeMode, newSettings.startTimePreset);
+    }
+  }
+
+  public setCameraMode(mode: CameraMode, announce = true) {
+    this.cameraMode = mode;
+    if (mode === 'first_person') {
+      this.cameraPitch = THREE.MathUtils.clamp(this.cameraPitch, -0.82, 0.82);
+    } else {
+      this.cameraPitch = THREE.MathUtils.clamp(this.cameraPitch, -0.1, 0.72);
+    }
+    const isFpPlaying =
+      mode === 'first_person' && (this.mode === 'playing' || this.mode === 'paused');
+    if (this.playerRig) {
+      this.playerRig.bodyGroup.visible = !isFpPlaying;
+    }
+    if (this.firstPersonRig) {
+      this.firstPersonRig.root.visible = isFpPlaying;
+    }
+    this.applyHeadlampVisual();
+    if (this.mode === 'playing' || this.mode === 'paused') {
+      this.snapCameraToPlayer();
+      if (announce) {
+        this.showBanner(
+          mode === 'first_person'
+            ? 'Camera: First-Person Mountaineer View [T]'
+            : 'Camera: Third-Person Expedition Follow [T]'
+        );
+      }
+      this.pushTelemetry();
+    }
+  }
+
+  public toggleCameraMode(): CameraMode {
+    const next: CameraMode = this.cameraMode === 'third_person' ? 'first_person' : 'third_person';
+    this.setCameraMode(next, true);
+    return next;
+  }
+
+  public setTimeMode(mode: TimeOfDayMode) {
+    this.settings = { ...this.settings, timeMode: mode };
+    this.applyTimeModeSelection(mode, this.settings.startTimePreset);
+    const label =
+      mode === 'day'
+        ? 'Daylight Mode'
+        : mode === 'night'
+          ? 'Moonlit Night Mode'
+          : mode === 'dynamic'
+            ? 'Dynamic 24h Day/Night Cycle'
+            : 'Stage Expedition Time';
+    this.showBanner(`Time System: ${label}`);
+    this.pushTelemetry();
+  }
+
+  private resolveInitialTimeOfDay(level: LevelConfig, settings: GameSettings): number {
+    if (settings.timeMode === 'day') return 0.48;
+    if (settings.timeMode === 'night') return 0.94;
+    switch (settings.startTimePreset) {
+      case 'sunrise':
+        return 0.26;
+      case 'midday':
+        return 0.5;
+      case 'sunset':
+        return 0.74;
+      case 'midnight':
+        return 0.94;
+      case 'expedition':
+      default:
+        return level.startTimeOfDay;
+    }
+  }
+
+  private applyTimeModeSelection(mode: TimeOfDayMode, preset: StartingTimePreset) {
+    if (mode === 'day') {
+      this.timeOfDay = 0.48;
+      this.headlampOn = false;
+    } else if (mode === 'night') {
+      this.timeOfDay = 0.94;
+      if (this.headlampBattery > 0) this.headlampOn = true;
+    } else if (this.level) {
+      this.timeOfDay = this.resolveInitialTimeOfDay(this.level, {
+        ...this.settings,
+        timeMode: mode,
+        startTimePreset: preset,
+      });
+      const dark = this.timeOfDay > 0.78 || this.timeOfDay < 0.22;
+      if (dark && this.headlampBattery > 0) this.headlampOn = true;
+    }
+    this.applyHeadlampVisual();
+    this.updateAtmosphere(0.016, this.elapsedTime);
   }
 
   public setMode(mode: 'menu' | 'cutscene' | 'playing' | 'paused') {
     const prevMode = this.mode;
     this.mode = mode;
+    const isFpActive =
+      this.cameraMode === 'first_person' && (mode === 'playing' || mode === 'paused');
+    if (this.playerRig) {
+      this.playerRig.bodyGroup.visible = !isFpActive;
+    }
+    if (this.firstPersonRig) {
+      this.firstPersonRig.root.visible = isFpActive;
+    }
+    this.applyHeadlampVisual();
+
     if (mode === 'playing') {
       this.clock.getDelta();
       audioEngine.setMusicIntensity(0.05);
@@ -572,15 +731,13 @@ export class MountainEngine {
       }
     }
 
-    const startsDark =
-      level.lightingMode === 'night' ||
-      level.lightingMode === 'night_to_dawn' ||
-      level.startTimeOfDay > 0.78 ||
-      level.startTimeOfDay < 0.22;
+    const resolvedTime = this.resolveInitialTimeOfDay(level, this.settings);
+    const startsDark = resolvedTime > 0.78 || resolvedTime < 0.22;
     this.headlampOn = startsDark;
+    this.nightHintShown = startsDark;
 
     this.elapsedTime = 0;
-    this.timeOfDay = level.startTimeOfDay;
+    this.timeOfDay = resolvedTime;
     this.weatherIndex = 0;
     this.weatherTimer = 0;
     this.avalancheTimer = 18 + Math.random() * 8;
@@ -809,17 +966,19 @@ export class MountainEngine {
 
     // Build Terrain Geometry with Variation Seed
     const effGraphics = this.resolveEffectiveGraphics(this.settings.graphics);
-    const segX = effGraphics === 'low' ? 60 : effGraphics === 'medium' ? 88 : 112;
-    const segZ = effGraphics === 'low' ? 140 : effGraphics === 'medium' ? 195 : 250;
+    const segX = this.isSoftwareGl ? 42 : effGraphics === 'low' ? 60 : effGraphics === 'medium' ? 88 : 112;
+    const segZ = this.isSoftwareGl ? 96 : effGraphics === 'low' ? 140 : effGraphics === 'medium' ? 195 : 250;
     const terrainGeo = this.terrain.buildGeometry(segX, segZ);
     const terrainMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       map: this.textures.snowAlbedo,
-      bumpMap: this.textures.snowBump,
+      bumpMap: this.isSoftwareGl ? null : this.textures.snowBump,
       bumpScale: 0.08,
-      roughness: 0.88,
+      roughness: 0.86,
       metalness: 0.04,
+      envMapIntensity: 0.65,
     });
+    this.terrainMat = terrainMat;
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     terrainMesh.receiveShadow = true;
     this.worldGroup.add(terrainMesh);
@@ -834,13 +993,16 @@ export class MountainEngine {
     this.buildHazardPool();
     this.rebuildSnowParticles();
 
-    // Realistic Human Player Rig
+    // Realistic Human Player Rig (Third-Person) + First-Person Hands & Ice Axes Rig
     this.playerRig = createMountaineerModel(
       character.suitColor,
       character.accentColor,
       character.helmetColor,
       character.skinTone
     );
+    this.firstPersonRig = createFirstPersonRig(character.suitColor, character.accentColor);
+    this.camera.add(this.firstPersonRig.root);
+
     const startX = this.terrain.ridgeCenterX(0);
     const startY = this.terrain.getHeightAt(startX, 0);
     this.playerPos.set(startX, startY, 0);
@@ -851,10 +1013,10 @@ export class MountainEngine {
     this.cameraPitch = 0.11;
     this.cameraZoom = 6.2;
     this.playerRig.root.position.copy(this.playerPos);
-    this.applyHeadlampVisual();
     this.worldGroup.add(this.playerRig.root);
 
     this.setMode(mode);
+    this.updateAtmosphere(0.016, 0);
     if (mode === 'menu') {
       this.camera.position.set(startX - 4.4, startY + 2.8, 8.8);
       this.camera.lookAt(startX, startY + 2.2, -24);
@@ -871,6 +1033,8 @@ export class MountainEngine {
     this.boulders = [];
     this.rivers = [];
     this.coverBoulders = [];
+    this.solidColliders = [];
+    this.terrainMat = null;
     this.wildlifeList = [];
     this.obstacles = [];
     this.beaconFlag = null;
@@ -887,6 +1051,22 @@ export class MountainEngine {
     this.pitchedTentMesh = null;
     audioEngine.setHelicopterVolume(0);
 
+    if (this.firstPersonRig) {
+      this.camera.remove(this.firstPersonRig.root);
+      this.firstPersonRig.root.traverse((obj) => {
+        if ((obj as THREE.Mesh).isMesh) {
+          const m = obj as THREE.Mesh;
+          m.geometry?.dispose();
+          if (Array.isArray(m.material)) {
+            m.material.forEach((mat) => mat.dispose());
+          } else {
+            m.material?.dispose();
+          }
+        }
+      });
+      this.firstPersonRig = null;
+    }
+
     while (this.worldGroup.children.length > 0) {
       const child = this.worldGroup.children[0];
       this.worldGroup.remove(child);
@@ -902,6 +1082,115 @@ export class MountainEngine {
         }
       });
     }
+  }
+
+  private buildSkyDome(farDist: number) {
+    const skyGeo = new THREE.SphereGeometry(Math.max(420, farDist * 0.85), 32, 20);
+    const skyMat = new THREE.ShaderMaterial({
+      uniforms: this.skyUniforms,
+      side: THREE.BackSide,
+      depthWrite: false,
+      fog: false,
+      vertexShader: /* glsl */ `
+        varying vec3 vWorldDir;
+        void main() {
+          vWorldDir = normalize(position);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: /* glsl */ `
+        uniform vec3 uZenithColor;
+        uniform vec3 uHorizonColor;
+        uniform vec3 uSunColor;
+        uniform vec3 uSunDir;
+        uniform vec3 uMoonDir;
+        uniform float uDayFactor;
+        uniform float uSunsetFactor;
+        uniform float uNightFactor;
+        uniform float uCloudDensity;
+        uniform float uTime;
+        uniform float uLightning;
+        varying vec3 vWorldDir;
+
+        float hash21(vec2 p) {
+          p = fract(p * vec2(234.34, 435.345));
+          p += dot(p, p + 34.23);
+          return fract(p.x * p.y);
+        }
+
+        float noise2(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          float a = hash21(i);
+          float b = hash21(i + vec2(1.0, 0.0));
+          float c = hash21(i + vec2(0.0, 1.0));
+          float d = hash21(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }
+
+        float fbm(vec2 p) {
+          float v = 0.0;
+          float a = 0.5;
+          for (int i = 0; i < 3; i++) {
+            v += a * noise2(p);
+            p *= 2.04;
+            a *= 0.5;
+          }
+          return v;
+        }
+
+        void main() {
+          vec3 dir = normalize(vWorldDir);
+          float h = clamp(dir.y, 0.0, 1.0);
+          float horizonBand = pow(1.0 - h, 2.6);
+
+          vec3 sky = mix(uHorizonColor, uZenithColor, pow(h, 0.55));
+
+          // Golden-hour / twilight horizon scattering toward solar azimuth
+          float sunDot = max(dot(dir, normalize(uSunDir)), 0.0);
+          vec3 sunsetGlow = vec3(0.95, 0.42, 0.16) * uSunsetFactor * horizonBand * (0.45 + 0.75 * pow(sunDot, 3.0));
+          sky += sunsetGlow;
+
+          // Solar disc & atmospheric corona
+          if (uDayFactor > 0.04) {
+            float sunHalo = pow(sunDot, 16.0) * 0.45 + pow(sunDot, 160.0) * 0.9;
+            float sunDisc = smoothstep(0.9986, 0.9994, sunDot);
+            sky += uSunColor * (sunHalo * 0.65 + sunDisc * 1.45) * uDayFactor;
+          }
+
+          // Moon disc & cold silver corona at night
+          if (uNightFactor > 0.08) {
+            float moonDot = max(dot(dir, normalize(uMoonDir)), 0.0);
+            float moonHalo = pow(moonDot, 42.0) * 0.24;
+            float moonDisc = smoothstep(0.9989, 0.9995, moonDot);
+            sky += vec3(0.75, 0.85, 0.98) * (moonHalo + moonDisc * 1.15) * uNightFactor;
+          }
+
+          // High-altitude alpine cloud bands
+          if (dir.y > 0.01) {
+            vec2 uv = dir.xz / (dir.y + 0.18) * 1.4 + vec2(uTime * 0.008, uTime * 0.004);
+            float c = fbm(uv);
+            float cloudMask = smoothstep(0.56 - uCloudDensity * 0.34, 0.86, c) * smoothstep(0.01, 0.22, dir.y);
+            vec3 cloudCol = mix(
+              mix(vec3(0.16, 0.21, 0.3), vec3(0.86, 0.9, 0.96), uDayFactor),
+              vec3(0.95, 0.58, 0.34),
+              uSunsetFactor * 0.72
+            );
+            sky = mix(sky, cloudCol, cloudMask * 0.55);
+          }
+
+          // Storm lightning sky pulse
+          sky += vec3(0.78, 0.88, 1.0) * uLightning * 0.65;
+
+          gl_FragColor = vec4(sky, 1.0);
+        }
+      `,
+    });
+    this.skyDome = new THREE.Mesh(skyGeo, skyMat);
+    this.skyDome.frustumCulled = false;
+    this.skyDome.renderOrder = -10;
+    this.scene.add(this.skyDome);
   }
 
   private buildStarfield() {
@@ -932,50 +1221,79 @@ export class MountainEngine {
 
   private buildKarakoramBackdrop() {
     if (!this.terrain) return;
-    // Dual-tone snow-capped mountain geometry using vertex colors (granite lower -> snow ridge top)
-    const peakGeo = new THREE.ConeGeometry(1, 1, 7, 4);
+    const effQ = this.resolveEffectiveGraphics(this.settings.graphics);
+    const radSegs = this.isSoftwareGl || effQ === 'low' ? 10 : 18;
+    const hSegs = this.isSoftwareGl || effQ === 'low' ? 6 : 10;
+
+    // Serrated alpine mountain geometry with multi-ridge vertex displacement (replaces low-poly cones)
+    const peakGeo = new THREE.ConeGeometry(1, 1, radSegs, hSegs);
     const pos = peakGeo.attributes.position as THREE.BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
     const col = new THREE.Color();
+
     for (let i = 0; i < pos.count; i++) {
-      const y = pos.getY(i); // -0.5 .. +0.5
-      if (y > 0.04) {
-        col.setHex(0xe8f1fa); // bright snow cap
-      } else if (y > -0.14) {
-        col.setHex(0x9fb2c7); // granite + snow transition
+      let x = pos.getX(i);
+      let y = pos.getY(i); // -0.5 .. +0.5
+      let z = pos.getZ(i);
+      const radius = Math.hypot(x, z);
+      const angle = Math.atan2(z, x);
+      const hNorm = y + 0.5; // 0 bottom -> 1 peak
+
+      // Sculpt sharp Karakoram arêtes, gullies & strata ledges
+      const ridgeNoise =
+        Math.sin(angle * 3.0 + hNorm * 4.2) * 0.16 +
+        Math.cos(angle * 5.0 - hNorm * 6.5) * 0.09 +
+        Math.sin((x + z) * 9.0) * 0.04;
+      const radialScale = 1 + ridgeNoise * Math.min(1, hNorm * 2.2) * (1 - hNorm * 0.45);
+      x *= radialScale;
+      z *= radialScale;
+      if (hNorm > 0.05 && hNorm < 0.96) {
+        y += Math.sin(angle * 4.0 + radius * 6.0) * 0.032;
+      }
+      pos.setXYZ(i, x, y, z);
+
+      // Slope-aware snow deposition: ridges & upper faces hold crisp wind-packed snow; steep couloirs expose dark granite
+      const snowBias = y + Math.sin(angle * 3.0 + hNorm * 3.5) * 0.11;
+      if (snowBias > 0.08) {
+        col.setHex(0xe8f1fa);
+      } else if (snowBias > -0.1) {
+        col.setHex(0x8fa4bc);
       } else {
-        col.setHex(0x4f5f73); // dark Karakoram rock base
+        col.setHex(0x3f4c5c);
       }
       colors[i * 3] = col.r;
       colors[i * 3 + 1] = col.g;
       colors[i * 3 + 2] = col.b;
     }
+    peakGeo.computeVertexNormals();
     peakGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
     const peakMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       map: this.textures.rockAlbedo,
-      roughness: 0.88,
+      bumpMap: this.isSoftwareGl || effQ === 'low' ? null : this.textures.rockBump,
+      bumpScale: 0.35,
+      roughness: 0.9,
       metalness: 0.04,
     });
 
-    const peakCount = 46;
+    const peakCount = this.isSoftwareGl ? 32 : 46;
     const peaks = new THREE.InstancedMesh(peakGeo, peakMat, peakCount);
     const c = new THREE.Color();
 
     for (let i = 0; i < peakCount; i++) {
       const side = i % 2 === 0 ? -1 : 1;
-      const distX = 74 + (i % 5) * 28 + Math.random() * 18;
+      const distX = 76 + (i % 5) * 28 + Math.random() * 18;
       const zPos = 35 - (i / peakCount) * (this.level.ridgeLength + 290);
-      const scaleXZ = 48 + Math.random() * 44;
-      const scaleY = 125 + Math.random() * 115;
-      _dummy.position.set(side * distX, scaleY * 0.42 - 6, zPos);
-      _dummy.rotation.set(0, Math.random() * Math.PI, 0);
-      _dummy.scale.set(scaleXZ, scaleY, scaleXZ);
+      const scaleXZ = 54 + Math.random() * 48;
+      const scaleY = 128 + Math.random() * 120;
+      _dummy.position.set(side * distX, scaleY * 0.4 - 8, zPos);
+      _dummy.rotation.set(0, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.08);
+      _dummy.scale.set(scaleXZ, scaleY, scaleXZ * (0.85 + Math.random() * 0.35));
       _dummy.updateMatrix();
       peaks.setMatrixAt(i, _dummy.matrix);
 
-      const tint = 0.9 + Math.random() * 0.1;
+      const tint = 0.88 + Math.random() * 0.12;
       c.setRGB(tint, tint, Math.min(1, tint + 0.04));
       peaks.setColorAt(i, c);
     }
@@ -984,23 +1302,45 @@ export class MountainEngine {
     peaks.computeBoundingSphere();
     this.worldGroup.add(peaks);
 
-    // Iconic K2 Pyramid on Horizon with crisp snow crown
-    const k2Geo = new THREE.ConeGeometry(165, 360, 5, 5);
+    // Iconic K2 Savage Mountain Massif on Horizon (multi-ribbed Abruzzi & Broad Peak silhouette)
+    const k2RadSegs = this.isSoftwareGl || effQ === 'low' ? 14 : 28;
+    const k2HSegs = this.isSoftwareGl || effQ === 'low' ? 8 : 16;
+    const k2Geo = new THREE.ConeGeometry(185, 375, k2RadSegs, k2HSegs);
     const k2Pos = k2Geo.attributes.position as THREE.BufferAttribute;
     const k2Colors = new Float32Array(k2Pos.count * 3);
     for (let i = 0; i < k2Pos.count; i++) {
-      const ny = k2Pos.getY(i) / 360; // -0.5 .. +0.5
-      if (ny > -0.02) {
+      let kx = k2Pos.getX(i);
+      let ky = k2Pos.getY(i);
+      let kz = k2Pos.getZ(i);
+      const ny = ky / 375; // -0.5 .. +0.5
+      const hNorm = ny + 0.5;
+      const ang = Math.atan2(kz, kx);
+
+      const spur =
+        Math.sin(ang * 4.0 + hNorm * 3.1) * 0.18 +
+        Math.cos(ang * 7.0 - hNorm * 5.2) * 0.08 +
+        Math.sin(ang * 11.0 + hNorm * 9.0) * 0.035;
+      const factor = 1 + spur * (1 - hNorm * 0.35);
+      kx *= factor;
+      kz *= factor * 0.84; // authentic asymmetrical massif profile
+      if (hNorm > 0.12 && hNorm < 0.94) {
+        ky += Math.sin(ang * 3.0 + hNorm * 8.0) * 9.5;
+      }
+      k2Pos.setXYZ(i, kx, ky, kz);
+
+      const snowMask = ny + Math.sin(ang * 4.0 + hNorm * 4.2) * 0.08;
+      if (snowMask > 0.02) {
         col.setHex(0xf1f7fe);
-      } else if (ny > -0.2) {
-        col.setHex(0xabc1d9);
+      } else if (snowMask > -0.18) {
+        col.setHex(0x9cb3cb);
       } else {
-        col.setHex(0x526478);
+        col.setHex(0x475669);
       }
       k2Colors[i * 3] = col.r;
       k2Colors[i * 3 + 1] = col.g;
       k2Colors[i * 3 + 2] = col.b;
     }
+    k2Geo.computeVertexNormals();
     k2Geo.setAttribute('color', new THREE.BufferAttribute(k2Colors, 3));
 
     const k2Pyramid = new THREE.Mesh(
@@ -1008,11 +1348,14 @@ export class MountainEngine {
       new THREE.MeshStandardMaterial({
         vertexColors: true,
         map: this.textures.rockAlbedo,
-        roughness: 0.84,
+        bumpMap: this.isSoftwareGl || effQ === 'low' ? null : this.textures.rockBump,
+        bumpScale: 0.45,
+        roughness: 0.88,
+        metalness: 0.03,
       })
     );
-    k2Pyramid.position.set(14, 155, -(this.level.ridgeLength + 170));
-    k2Pyramid.rotation.y = 0.48;
+    k2Pyramid.position.set(16, 152, -(this.level.ridgeLength + 178));
+    k2Pyramid.rotation.y = 0.44;
     this.worldGroup.add(k2Pyramid);
   }
 
@@ -1021,8 +1364,10 @@ export class MountainEngine {
     const rockGeo = new THREE.DodecahedronGeometry(1.0, 1);
     const rockMat = new THREE.MeshStandardMaterial({
       map: this.textures.rockAlbedo,
-      roughness: 0.92,
-      metalness: 0.06,
+      bumpMap: this.textures.rockBump,
+      bumpScale: 0.18,
+      roughness: 0.93,
+      metalness: 0.05,
     });
 
     const effQ = this.resolveEffectiveGraphics(this.settings.graphics);
@@ -1090,6 +1435,7 @@ export class MountainEngine {
         tree.scale.setScalar(scale);
         tree.rotation.y = Math.random() * Math.PI * 2;
         this.worldGroup.add(tree);
+        this.solidColliders.push({ x, z, radius: 0.58 * scale });
         placed += 1;
       }
     }
@@ -1121,7 +1467,7 @@ export class MountainEngine {
       });
     }
 
-    // 3. Rockfall Cover Boulders along Rockfall Couloirs
+    // 3. Rockfall Cover Boulders along Rockfall Couloirs (with solid collision)
     for (const rf of this.terrain.rockfallZones) {
       const steps = 4;
       for (let i = 0; i < steps; i++) {
@@ -1132,6 +1478,7 @@ export class MountainEngine {
         boulder.position.set(x, y - 0.15, z);
         this.worldGroup.add(boulder);
         this.coverBoulders.push(new THREE.Vector3(x, y, z));
+        this.solidColliders.push({ x, z, radius: 1.5 });
       }
     }
   }
@@ -1146,6 +1493,7 @@ export class MountainEngine {
     baseTent.position.set(bx, by - 0.1, -4.0);
     baseTent.rotation.y = 0.38;
     this.worldGroup.add(baseTent);
+    this.solidColliders.push({ x: bx, z: -4.0, radius: 1.75 });
 
     // Mid-Camp Tent & Campfire
     const mz = this.terrain.midCampZ;
@@ -1155,6 +1503,7 @@ export class MountainEngine {
     midTent.position.set(mx, my, mz);
     midTent.rotation.y = 0.45;
     this.worldGroup.add(midTent);
+    this.solidColliders.push({ x: mx, z: mz, radius: 1.75 });
 
     const firePos = new THREE.Vector3(mx + 2.6, this.terrain.getHeightAt(mx + 2.6, mz + 1.2), mz + 1.2);
     const campfire = createCampfireModel();
@@ -1549,9 +1898,35 @@ export class MountainEngine {
         : this.headlampBattery < 15
           ? 0.45 + 0.45 * Math.sin(this.elapsedTime * 19)
           : 1.0;
-    this.playerRig.headlamp.intensity = this.headlampOn ? 4.4 * batteryFactor : 0;
+
+    const isFp =
+      this.cameraMode === 'first_person' && (this.mode === 'playing' || this.mode === 'paused');
+    const active = this.headlampOn && this.headlampBattery > 0;
+    const isDarkEnv =
+      this.timeOfDay > 0.76 ||
+      this.timeOfDay < 0.24 ||
+      Boolean(this.terrain?.isInsideIceCave(this.playerPos.x, this.playerPos.z));
+    const coneAlpha = active ? (isDarkEnv ? 0.22 : 0.06) * batteryFactor : 0;
+
+    // Single shared SpotLight drives whichever camera perspective is active (zero extra shader cost)
+    this.headlampLight.intensity = active ? (isFp ? 5.8 : 5.2) * batteryFactor : 0;
+    const tpConeMat = this.playerRig.headlampCone.material as THREE.ShaderMaterial;
+    const tpConeAlpha = !isFp ? coneAlpha : 0;
+    if (tpConeMat.uniforms?.uOpacity) {
+      tpConeMat.uniforms.uOpacity.value = tpConeAlpha;
+    }
+    this.playerRig.headlampCone.visible = tpConeAlpha > 0.002;
     (this.playerRig.headlampLens.material as THREE.MeshStandardMaterial).emissiveIntensity =
-      this.headlampOn && this.headlampBattery > 0 ? 1.8 * batteryFactor : 0.15;
+      active ? 1.9 * batteryFactor : 0.15;
+
+    if (this.firstPersonRig) {
+      const fpConeMat = this.firstPersonRig.headlampCone.material as THREE.ShaderMaterial;
+      const fpConeAlpha = isFp ? coneAlpha * 0.65 : 0;
+      if (fpConeMat.uniforms?.uOpacity) {
+        fpConeMat.uniforms.uOpacity.value = fpConeAlpha;
+      }
+      this.firstPersonRig.headlampCone.visible = fpConeAlpha > 0.002;
+    }
   }
 
   public useEquipment(id: string) {
@@ -2228,10 +2603,17 @@ export class MountainEngine {
       this.lastPointerX = e.clientX;
       this.lastPointerY = e.clientY;
 
-      const sens = 0.0048 * this.settings.cameraSensitivity;
+      const sens =
+        (this.cameraMode === 'first_person' ? 0.0058 : 0.0048) * this.settings.cameraSensitivity;
       this.cameraYaw -= dx * sens;
       const ySign = this.settings.invertY ? -1 : 1;
-      this.cameraPitch = THREE.MathUtils.clamp(this.cameraPitch + dy * sens * ySign, -0.1, 0.72);
+      const minPitch = this.cameraMode === 'first_person' ? -0.82 : -0.1;
+      const maxPitch = this.cameraMode === 'first_person' ? 0.82 : 0.72;
+      this.cameraPitch = THREE.MathUtils.clamp(
+        this.cameraPitch + dy * sens * ySign,
+        minPitch,
+        maxPitch
+      );
     };
 
     const onPointerUp = (e: PointerEvent) => {
@@ -2276,7 +2658,16 @@ export class MountainEngine {
   }
 
   private updateAtmosphere(dt: number, elapsed: number) {
-    this.timeOfDay = (this.timeOfDay + dt * this.level.daySpeed) % 1.0;
+    const tMode = this.settings.timeMode || 'auto';
+    if (tMode === 'day') {
+      this.timeOfDay = 0.48;
+    } else if (tMode === 'night') {
+      this.timeOfDay = 0.94;
+    } else if (tMode === 'dynamic') {
+      this.timeOfDay = (this.timeOfDay + dt * 0.0028) % 1.0;
+    } else {
+      this.timeOfDay = (this.timeOfDay + dt * this.level.daySpeed) % 1.0;
+    }
 
     this.weatherTimer += dt;
     if (this.weatherTimer > 38) {
@@ -2294,58 +2685,94 @@ export class MountainEngine {
     const weather = this.getCurrentWeather();
     const sunAngle = (this.timeOfDay - 0.25) * Math.PI * 2;
     const sunElev = Math.sin(sunAngle);
-    const dayFactor = THREE.MathUtils.clamp((sunElev + 0.16) / 0.65, 0, 1);
+    const sunCos = Math.cos(sunAngle);
+    const dayFactor = THREE.MathUtils.clamp((sunElev + 0.14) / 0.56, 0, 1);
+    const nightFactor = 1 - dayFactor;
+    const sunsetFactor = THREE.MathUtils.clamp(1 - Math.abs(sunElev - 0.04) / 0.24, 0, 1);
 
+    if (this.mode === 'playing' && nightFactor > 0.72 && !this.headlampOn && !this.nightHintShown) {
+      this.nightHintShown = true;
+      this.showBanner('Nightfall across the Karakoram — Press [3] to ignite your Headlamp!');
+    }
+
+    // Low-angle sunrise/sunset casts long shadows; night switches directional light to moonlight arc
+    const lightDirX = sunElev >= -0.05 ? sunCos : -sunCos;
+    const lightDirY = Math.max(0.24, Math.abs(sunElev));
+    const lightDirZ = sunElev >= -0.05 ? -0.42 : -0.58;
     this.sunLight.position.set(
-      this.playerPos.x + Math.cos(sunAngle) * 58,
-      this.playerPos.y + Math.max(18, Math.abs(sunElev) * 72),
-      this.playerPos.z + 28
+      this.playerPos.x + lightDirX * 72,
+      this.playerPos.y + lightDirY * 68,
+      this.playerPos.z + lightDirZ * 56
     );
     this.sunLight.target.position.copy(this.playerPos);
     this.sunLight.target.updateMatrixWorld();
 
     this.rimLight.position.set(
-      this.playerPos.x - 40,
-      this.playerPos.y + 28,
+      this.playerPos.x - lightDirX * 42,
+      this.playerPos.y + 24,
       this.playerPos.z - 55
     );
     this.rimLight.target.position.copy(this.playerPos);
     this.rimLight.target.updateMatrixWorld();
 
-    // Balanced moonlit night -> crisp alpine dawn -> bright Himalayan sky (mountains & trail always readable)
-    const nightSky = 0x132238;
-    const dawnSky = 0xb58d76;
-    const daySky = 0x8bb2d6;
+    // Update Atmospheric Sky Dome Uniforms (Zenith, Horizon, Solar/Lunar vectors, Clouds)
+    this.skyUniforms.uSunDir.value.set(sunCos, sunElev, -0.45).normalize();
+    this.skyUniforms.uMoonDir.value.set(-sunCos * 0.85, Math.max(0.18, -sunElev + 0.25), -0.55).normalize();
+    this.skyUniforms.uDayFactor.value = dayFactor;
+    this.skyUniforms.uSunsetFactor.value = sunsetFactor;
+    this.skyUniforms.uNightFactor.value = nightFactor;
+    this.skyUniforms.uTime.value = elapsed;
 
+    const nightZenith = 0x050a14;
+    const duskZenith = 0x1e3556;
+    const dayZenith = 0x204d82;
+    const zenithCol = this.skyUniforms.uZenithColor.value;
     if (dayFactor < 0.35) {
-      _skyColor.setHex(nightSky).lerp(_fogColor.setHex(dawnSky), dayFactor / 0.35);
+      zenithCol.setHex(nightZenith).lerp(_fogColor.setHex(duskZenith), dayFactor / 0.35);
     } else {
-      _skyColor.setHex(dawnSky).lerp(_fogColor.setHex(daySky), (dayFactor - 0.35) / 0.65);
+      zenithCol.setHex(duskZenith).lerp(_fogColor.setHex(dayZenith), (dayFactor - 0.35) / 0.65);
     }
 
-    let fogDensity = 0.0010;
+    const nightHorizon = 0x0d1728;
+    const dawnHorizon = 0xc97b52;
+    const dayHorizon = 0x99bddb;
+
+    if (dayFactor < 0.38) {
+      _skyColor.setHex(nightHorizon).lerp(_fogColor.setHex(dawnHorizon), dayFactor / 0.38);
+    } else {
+      _skyColor.setHex(dawnHorizon).lerp(_fogColor.setHex(dayHorizon), (dayFactor - 0.38) / 0.62);
+    }
+
+    let fogDensity = 0.00095 + nightFactor * 0.00145;
     let snowIntensity = 0.16;
+    let cloudDensity = 0.28;
     if (weather === 'overcast') {
-      fogDensity = 0.0015;
-      _skyColor.lerp(_fogColor.setHex(0x7c95ad), 0.3);
+      fogDensity = 0.0016 + nightFactor * 0.0012;
+      cloudDensity = 0.72;
+      _skyColor.lerp(_fogColor.setHex(0x6e849b), 0.35 * (0.4 + 0.6 * dayFactor));
     } else if (weather === 'fog') {
-      fogDensity = 0.0040;
-      _skyColor.lerp(_fogColor.setHex(0x96abc0), 0.42);
+      fogDensity = 0.0044 + nightFactor * 0.0012;
+      cloudDensity = 0.85;
+      _skyColor.lerp(_fogColor.setHex(0x8aa0b5), 0.45 * (0.35 + 0.65 * dayFactor));
     } else if (weather === 'snowfall') {
-      fogDensity = 0.0024;
-      snowIntensity = 0.62;
-      _skyColor.lerp(_fogColor.setHex(0x8299b0), 0.35);
+      fogDensity = 0.0025 + nightFactor * 0.0013;
+      snowIntensity = 0.65;
+      cloudDensity = 0.78;
+      _skyColor.lerp(_fogColor.setHex(0x758ca3), 0.38 * (0.35 + 0.65 * dayFactor));
     } else if (weather === 'snowstorm' || weather === 'thunder_snow') {
-      fogDensity = 0.0038;
-      snowIntensity = 1.05;
-      _skyColor.lerp(_fogColor.setHex(0x5c7188), 0.52);
+      fogDensity = 0.0041 + nightFactor * 0.0014;
+      snowIntensity = 1.08;
+      cloudDensity = 0.92;
+      _skyColor.lerp(_fogColor.setHex(0x4f6378), 0.55 * (0.35 + 0.65 * dayFactor));
     } else if (weather === 'blizzard') {
-      fogDensity = 0.0052;
-      snowIntensity = 1.45;
-      _skyColor.lerp(_fogColor.setHex(0x63788d), 0.58);
+      fogDensity = 0.0056 + nightFactor * 0.0015;
+      snowIntensity = 1.48;
+      cloudDensity = 0.98;
+      _skyColor.lerp(_fogColor.setHex(0x5a6e82), 0.6 * (0.35 + 0.65 * dayFactor));
     } else if (weather === 'windy') {
-      fogDensity = 0.0017;
-      snowIntensity = 0.42;
+      fogDensity = 0.0017 + nightFactor * 0.0012;
+      snowIntensity = 0.44;
+      cloudDensity = 0.46;
     }
 
     // Lightning flash in storm stages
@@ -2358,6 +2785,9 @@ export class MountainEngine {
       }
     }
     this.lightningFlash = Math.max(0, this.lightningFlash - dt * 3.8);
+    this.skyUniforms.uLightning.value = this.lightningFlash;
+    this.skyUniforms.uCloudDensity.value = cloudDensity;
+    this.skyUniforms.uHorizonColor.value.copy(_skyColor);
     if (this.lightningFlash > 0.05) {
       _skyColor.lerp(_fogColor.setHex(0xcbe0f5), this.lightningFlash * 0.55);
     }
@@ -2365,24 +2795,47 @@ export class MountainEngine {
     this.scene.background = _skyColor;
     this.fog.color.copy(_skyColor);
     this.fog.density = THREE.MathUtils.damp(this.fog.density, fogDensity, 2.0, dt);
+    this.visibilityMeters = Math.round(
+      THREE.MathUtils.clamp(3.2 / Math.max(0.001, this.fog.density), 45, 950)
+    );
 
-    // Readable moonlight at night + crisp alpine sunlight during day
-    const weatherDim = weather === 'blizzard' ? 0.72 : weather === 'snowstorm' ? 0.82 : 1.0;
-    this.sunLight.intensity = (0.9 + dayFactor * 1.45) * weatherDim + this.lightningFlash * 1.4;
-    if (dayFactor < 0.2) {
-      _sunColor.setHex(0xaac4e2); // silvery moonlight
-    } else if (dayFactor < 0.45) {
-      _sunColor.setHex(0xf4be94);
+    // True Darkness at Night + Warm Golden Low-Angle Sunset + Crisp Midday Snow Reflection
+    const weatherDim = weather === 'blizzard' ? 0.7 : weather === 'snowstorm' ? 0.8 : 1.0;
+    const moonIntensity = 0.36;
+    const sunBase = 2.15 - sunsetFactor * 0.5;
+    this.sunLight.intensity =
+      THREE.MathUtils.lerp(moonIntensity, sunBase, dayFactor) * weatherDim + this.lightningFlash * 1.6;
+    if (dayFactor < 0.18) {
+      _sunColor.setHex(0x88acd6); // cool silver-blue moonlight
+    } else if (sunsetFactor > 0.38) {
+      _sunColor.setHex(0xf6985a); // golden-orange sunset/sunrise light
     } else {
       _sunColor.setHex(0xfff5e8);
     }
     this.sunLight.color.copy(_sunColor);
-    this.hemiLight.intensity = 0.68 + dayFactor * 0.44;
+    this.skyUniforms.uSunColor.value.copy(_sunColor);
+
+    this.hemiLight.intensity = THREE.MathUtils.lerp(0.16, 0.86, dayFactor) * weatherDim;
+    this.hemiLight.color.setHex(dayFactor < 0.25 ? 0x263f66 : 0xaad0f2);
+    this.hemiLight.groundColor.setHex(dayFactor < 0.25 ? 0x0d1522 : 0x3b495c);
+    this.rimLight.intensity = THREE.MathUtils.lerp(0.2, 0.58, dayFactor);
+
+    if (!this.isSoftwareGl) {
+      this.scene.environmentIntensity = THREE.MathUtils.lerp(0.14, 0.84, dayFactor);
+    }
+    if (this.terrainMat) {
+      this.terrainMat.roughness = THREE.MathUtils.clamp(
+        0.86 - sunsetFactor * 0.1 + nightFactor * 0.05,
+        0.7,
+        0.94
+      );
+      this.terrainMat.envMapIntensity = THREE.MathUtils.lerp(0.18, 0.75, dayFactor);
+    }
 
     if (this.starField) {
       const starMat = this.starField.material as THREE.PointsMaterial;
-      const weatherClear = weather === 'clear' || weather === 'windy' || weather === 'overcast' ? 1 : 0.25;
-      starMat.opacity = Math.max(0, (1 - dayFactor * 1.6) * 0.85 * weatherClear);
+      const weatherClear = weather === 'clear' || weather === 'windy' || weather === 'overcast' ? 1 : 0.28;
+      starMat.opacity = Math.max(0, (1 - dayFactor * 1.45) * 0.92 * weatherClear);
     }
 
     // Animate Glacial Rivers & Flood Surge
@@ -2680,14 +3133,21 @@ export class MountainEngine {
       this.playerVel.x = THREE.MathUtils.damp(this.playerVel.x, nx * speed, 10, dt);
       this.playerVel.z = THREE.MathUtils.damp(this.playerVel.z, nz * speed, 10, dt);
 
-      const targetYaw = Math.atan2(-nx, -nz);
-      let diff = targetYaw - this.playerYaw;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      this.playerYaw += diff * Math.min(1, dt * 10);
+      if (this.cameraMode === 'first_person') {
+        this.playerYaw = this.cameraYaw;
+      } else {
+        const targetYaw = Math.atan2(-nx, -nz);
+        let diff = targetYaw - this.playerYaw;
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        this.playerYaw += diff * Math.min(1, dt * 10);
+      }
     } else {
       this.playerVel.x = THREE.MathUtils.damp(this.playerVel.x, 0, 12, dt);
       this.playerVel.z = THREE.MathUtils.damp(this.playerVel.z, 0, 12, dt);
+      if (this.cameraMode === 'first_person') {
+        this.playerYaw = this.cameraYaw;
+      }
     }
 
     // Glacial flood lateral current push when wading unroped
@@ -2728,6 +3188,20 @@ export class MountainEngine {
         if (this.statusBannerTimer <= 0) {
           this.showBanner('Debris blocking ridge! Press [X] or Push button to shove clear.');
         }
+      }
+    }
+
+    // Resolve solid environmental colliders (boulders, tree trunks, expedition tents)
+    const playerRadius = 0.48;
+    for (const col of this.solidColliders) {
+      const dx = nextX - col.x;
+      const dz = nextZ - col.z;
+      const dist = Math.hypot(dx, dz);
+      const minD = col.radius + playerRadius;
+      if (dist < minD) {
+        const inv = dist > 0.001 ? 1 / dist : 1;
+        nextX = col.x + (dist > 0.001 ? dx * inv : 0) * minD;
+        nextZ = col.z + (dist > 0.001 ? dz * inv : 1) * minD;
       }
     }
 
@@ -2893,13 +3367,47 @@ export class MountainEngine {
       this.playerRig.rightElbow.rotation.x = -0.85 * p;
     }
 
-    // Visible breathing vapor & cold/fatigue head reaction
+    // Visible breathing vapor & cold/fatigue head reaction (amplified in cold night air)
+    const isDarkCold = this.timeOfDay > 0.76 || this.timeOfDay < 0.24 || this.temperature < 48;
     const breathFreq = 2.0 + (1 - this.oxygen / 100) * 2.5 + (canSprint ? 1.5 : 0);
     const breathWave = 0.5 + 0.5 * Math.sin(elapsed * breathFreq);
     const breathMat = this.playerRig.breathPuff.material as THREE.MeshStandardMaterial;
-    breathMat.opacity = THREE.MathUtils.clamp(breathWave * 0.42, 0, 0.48);
-    this.playerRig.breathPuff.scale.setScalar(0.85 + breathWave * 0.75);
+    breathMat.opacity = THREE.MathUtils.clamp(breathWave * (isDarkCold ? 0.56 : 0.38), 0, 0.62);
+    this.playerRig.breathPuff.scale.setScalar(0.85 + breathWave * 0.78);
     this.playerRig.breathPuff.position.z = -0.19 - breathWave * 0.14;
+
+    if (this.firstPersonRig) {
+      const moving = horizSpeed > 0.3 && !slopeBlocked;
+      const bobFreq = canSprint ? 10.5 : isClimbing ? 8.5 : 6.4;
+      const bobAmp = moving ? (canSprint ? 0.026 : 0.014) : 0.004;
+      const bobX = Math.cos(elapsed * (bobFreq * 0.5)) * bobAmp * 0.8;
+      const bobY = Math.sin(elapsed * bobFreq) * bobAmp;
+      const climbOffset = isClimbing ? 0.09 : 0;
+
+      const lSwing = this.leftAxeSwingTimer > 0 ? Math.sin((this.leftAxeSwingTimer / 0.28) * Math.PI) : 0;
+      const rSwing = this.rightAxeSwingTimer > 0 ? Math.sin((this.rightAxeSwingTimer / 0.28) * Math.PI) : 0;
+      const lClimb = isClimbing && moving ? Math.sin(elapsed * 8.5) * 0.16 : 0;
+      const rClimb = isClimbing && moving ? -Math.sin(elapsed * 8.5) * 0.16 : 0;
+
+      this.firstPersonRig.leftArm.position.set(
+        -0.25 + bobX,
+        -0.225 + bobY + climbOffset + lClimb * 0.35 + lSwing * 0.12,
+        -0.31 - lSwing * 0.24
+      );
+      this.firstPersonRig.leftArm.rotation.x = lClimb - lSwing * 0.85;
+
+      this.firstPersonRig.rightArm.position.set(
+        0.25 + bobX,
+        -0.225 - bobY + climbOffset + rClimb * 0.35 + rSwing * 0.12,
+        -0.31 - rSwing * 0.24
+      );
+      this.firstPersonRig.rightArm.rotation.x = rClimb - rSwing * 0.85;
+
+      const fpBreathMat = this.firstPersonRig.breathPuff.material as THREE.MeshBasicMaterial;
+      fpBreathMat.opacity = isDarkCold ? THREE.MathUtils.clamp(breathWave * 0.18, 0, 0.22) : 0;
+      this.firstPersonRig.breathPuff.scale.setScalar(0.9 + breathWave * 0.65);
+      this.firstPersonRig.breathPuff.position.set(0.02, -0.14 + breathWave * 0.05, -0.35 - breathWave * 0.08);
+    }
 
     if (this.temperature < 32) {
       this.playerRig.head.rotation.y = Math.sin(elapsed * 22) * 0.04;
@@ -3640,6 +4148,16 @@ export class MountainEngine {
 
   private snapCameraToPlayer() {
     if (!this.terrain) return;
+    if (this.cameraMode === 'first_person') {
+      const eyeH = this.input.crouch ? 1.18 : 1.66;
+      this.camera.position.set(
+        this.playerPos.x - Math.sin(this.cameraYaw) * 0.06,
+        this.playerPos.y + eyeH,
+        this.playerPos.z - Math.cos(this.cameraYaw) * 0.06
+      );
+      this.camera.rotation.set(-this.cameraPitch, this.cameraYaw, 0, 'YXZ');
+      return;
+    }
     const horizDist = this.cameraZoom * Math.cos(this.cameraPitch);
     const vertDist = this.cameraZoom * Math.sin(this.cameraPitch) + 1.25;
     const desiredX = this.playerPos.x + Math.sin(this.cameraYaw) * horizDist;
@@ -3666,6 +4184,7 @@ export class MountainEngine {
       this.camera.position.lerp(_camDesired, 1 - Math.exp(-4 * dt));
       _camTarget.set(this.playerPos.x, this.playerPos.y + 2.2, this.playerPos.z - 24);
       this.camera.lookAt(_camTarget);
+      if (this.skyDome) this.skyDome.position.copy(this.camera.position);
       return;
     }
 
@@ -3689,11 +4208,34 @@ export class MountainEngine {
       }
       this.camera.position.lerp(_camDesired, 1 - Math.exp(-4 * dt));
       this.camera.lookAt(_camTarget);
+      if (this.skyDome) this.skyDome.position.copy(this.camera.position);
       return;
     }
 
-    const horizDist = this.cameraZoom * Math.cos(this.cameraPitch);
-    const vertDist = this.cameraZoom * Math.sin(this.cameraPitch) + 1.25;
+    if (this.cameraMode === 'first_person') {
+      const horizSpeed = Math.hypot(this.playerVel.x, this.playerVel.z);
+      const bob =
+        horizSpeed > 0.35
+          ? Math.sin(elapsed * (this.input.sprint ? 11.0 : 7.4)) * 0.042
+          : Math.sin(elapsed * 2.0) * 0.008;
+      const eyeHeight = (this.input.crouch ? 1.18 : 1.66) + bob;
+      _camDesired.set(
+        this.playerPos.x - Math.sin(this.cameraYaw) * 0.06,
+        this.playerPos.y + eyeHeight,
+        this.playerPos.z - Math.cos(this.cameraYaw) * 0.06
+      );
+      this.camera.position.lerp(_camDesired, 1 - Math.exp(-20 * dt));
+      this.camera.rotation.set(-this.cameraPitch, this.cameraYaw, 0, 'YXZ');
+      this.syncHeadlampLightPose(true);
+      if (this.skyDome) this.skyDome.position.copy(this.camera.position);
+      return;
+    }
+
+    const slope = this.terrain.getSlopeDegrees(this.playerPos.x, this.playerPos.z);
+    const climbingBoost = this.input.climb && slope > 21 ? 0.9 : 0;
+    const activeZoom = this.cameraZoom + climbingBoost;
+    const horizDist = activeZoom * Math.cos(this.cameraPitch);
+    const vertDist = activeZoom * Math.sin(this.cameraPitch) + 1.25 + climbingBoost * 0.35;
 
     const desiredX = this.playerPos.x + Math.sin(this.cameraYaw) * horizDist;
     const desiredZ = this.playerPos.z + Math.cos(this.cameraYaw) * horizDist;
@@ -3707,6 +4249,40 @@ export class MountainEngine {
     const lookZ = this.playerPos.z - Math.cos(this.cameraYaw) * 2.2;
     _camTarget.set(lookX, this.playerPos.y + 1.85, lookZ);
     this.camera.lookAt(_camTarget);
+    this.syncHeadlampLightPose(false);
+    if (this.skyDome) this.skyDome.position.copy(this.camera.position);
+  }
+
+  private syncHeadlampLightPose(isFp: boolean) {
+    if (!this.headlampOn || this.headlampBattery <= 0) return;
+    if (isFp) {
+      this.camera.getWorldDirection(_vec3);
+      this.headlampLight.position.set(
+        this.camera.position.x,
+        this.camera.position.y + 0.08,
+        this.camera.position.z
+      );
+      this.headlampLight.target.position
+        .copy(this.headlampLight.position)
+        .addScaledVector(_vec3, 14);
+      this.headlampLight.target.position.y -= 0.4;
+      this.headlampLight.target.updateMatrixWorld();
+    } else {
+      const fx = -Math.sin(this.playerYaw);
+      const fz = -Math.cos(this.playerYaw);
+      const headH = this.input.crouch ? 1.46 : 1.78;
+      this.headlampLight.position.set(
+        this.playerPos.x + fx * 0.16,
+        this.playerPos.y + headH,
+        this.playerPos.z + fz * 0.16
+      );
+      this.headlampLight.target.position.set(
+        this.playerPos.x + fx * 12,
+        this.playerPos.y + headH - 0.85,
+        this.playerPos.z + fz * 12
+      );
+      this.headlampLight.target.updateMatrixWorld();
+    }
   }
 
   private buildTelemetrySnapshot(): GameTelemetry {
@@ -3890,6 +4466,10 @@ export class MountainEngine {
       windSpeedKmh,
       ambientTempC,
       timeOfDayLabel,
+      timeOfDay: Number(this.timeOfDay.toFixed(3)),
+      timeMode: this.settings.timeMode || 'auto',
+      visibilityMeters: this.visibilityMeters,
+      cameraMode: this.cameraMode,
       isNight,
       headlampOn: this.headlampOn,
       isClimbing: this.input.climb && slope > 21,
@@ -3950,7 +4530,7 @@ export class MountainEngine {
     this.softwareTimerId = window.setTimeout(() => {
       if (this.disposed) return;
       cb();
-    }, 150);
+    }, 360);
   }
 
   private tick = () => {
@@ -3994,9 +4574,16 @@ export class MountainEngine {
     window.clearTimeout(this.softwareTimerId);
     this.cleanupListeners();
     this.clearWorld();
+    if (this.skyDome) {
+      this.scene.remove(this.skyDome);
+      this.skyDome.geometry.dispose();
+      (this.skyDome.material as THREE.Material).dispose();
+      this.skyDome = null;
+    }
     this.textures.snowAlbedo.dispose();
     this.textures.snowBump.dispose();
     this.textures.rockAlbedo.dispose();
+    this.textures.rockBump.dispose();
     this.textures.iceAlbedo.dispose();
     this.textures.particleTex.dispose();
     this.renderer.dispose();

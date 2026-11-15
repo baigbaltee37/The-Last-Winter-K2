@@ -14,8 +14,60 @@ export interface MountaineerRig {
   rightElbow: THREE.Group;
   head: THREE.Group;
   breathPuff: THREE.Mesh;
-  headlamp: THREE.SpotLight;
   headlampLens: THREE.Mesh;
+  headlampCone: THREE.Mesh;
+}
+
+export interface FirstPersonRig {
+  root: THREE.Group;
+  leftArm: THREE.Group;
+  rightArm: THREE.Group;
+  leftAxe: THREE.Group;
+  rightAxe: THREE.Group;
+  headlampCone: THREE.Mesh;
+  breathPuff: THREE.Mesh;
+}
+
+export function createSoftHeadlampConeMaterial(side: THREE.Side = THREE.FrontSide): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(0xdbeeff) },
+      uOpacity: { value: 0 },
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vViewNormal;
+      varying vec3 vViewPos;
+      void main() {
+        vUv = uv;
+        vec4 mvPos = modelViewMatrix * vec4(position, 1.0);
+        vViewPos = mvPos.xyz;
+        vViewNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * mvPos;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uColor;
+      uniform float uOpacity;
+      varying vec2 vUv;
+      varying vec3 vViewNormal;
+      varying vec3 vViewPos;
+      void main() {
+        float axial = clamp(vUv.y, 0.0, 1.0);
+        float farFade = smoothstep(0.0, 0.62, axial);
+        float nearFade = smoothstep(1.0, 0.84, axial);
+        float edgeDot = abs(dot(normalize(vViewNormal), normalize(-vViewPos)));
+        float edgeFade = pow(clamp(edgeDot, 0.0, 1.0), 2.0);
+        float alpha = uOpacity * farFade * nearFade * edgeFade;
+        if (alpha < 0.001) discard;
+        gl_FragColor = vec4(uColor, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side,
+  });
 }
 
 export function createMountaineerModel(
@@ -278,11 +330,16 @@ export function createMountaineerModel(
   headlampLens.position.set(0, 0.235, -0.13);
   head.add(headlampLens);
 
-  const headlamp = new THREE.SpotLight(0xf1f5f9, 0, 48, Math.PI / 4.2, 0.45, 1.25);
-  headlamp.position.set(0, 0.235, -0.16);
-  headlamp.target.position.set(0, -0.45, -9);
-  head.add(headlamp);
-  head.add(headlamp.target);
+  // Soft volumetric headlamp beam cone (axial + silhouette fade, zero hard rim)
+  const coneGeo = new THREE.ConeGeometry(2.15, 9.5, 24, 1, true);
+  coneGeo.translate(0, -4.75, 0);
+  coneGeo.rotateX(Math.PI / 2);
+  const coneMat = createSoftHeadlampConeMaterial(THREE.FrontSide);
+  const headlampCone = new THREE.Mesh(coneGeo, coneMat);
+  headlampCone.position.set(0, 0.235, -0.18);
+  headlampCone.rotation.x = -0.05;
+  headlampCone.visible = false;
+  head.add(headlampCone);
 
   // Visible Freezing Breath Vapor Cloud
   const breathMat = new THREE.MeshStandardMaterial({
@@ -371,8 +428,122 @@ export function createMountaineerModel(
     rightElbow: rightArmRig.elbow,
     head,
     breathPuff,
-    headlamp,
     headlampLens,
+    headlampCone,
+  };
+}
+
+export function createFirstPersonRig(
+  suitColorHex: string,
+  accentColorHex: string
+): FirstPersonRig {
+  const root = new THREE.Group();
+
+  const suitMat = new THREE.MeshStandardMaterial({
+    color: suitColorHex,
+    roughness: 0.78,
+    metalness: 0.04,
+  });
+  const cuffMat = new THREE.MeshStandardMaterial({
+    color: 0x1a2029,
+    roughness: 0.86,
+    metalness: 0.12,
+  });
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: accentColorHex,
+    roughness: 0.56,
+    metalness: 0.12,
+  });
+  const steelMat = new THREE.MeshStandardMaterial({
+    color: 0xcbd5e1,
+    roughness: 0.24,
+    metalness: 0.88,
+  });
+
+  const buildFpArm = (sideSign: number) => {
+    const arm = new THREE.Group();
+    arm.position.set(sideSign * 0.25, -0.225, -0.31);
+
+    // Insulated parka forearm sleeve
+    const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.068, 0.056, 0.32, 12), suitMat);
+    sleeve.rotation.x = Math.PI * 0.42;
+    sleeve.rotation.z = sideSign * 0.18;
+    sleeve.position.set(0, -0.05, 0.09);
+    arm.add(sleeve);
+
+    // Heavy mountaineering gauntlet glove
+    const gauntlet = new THREE.Mesh(new THREE.BoxGeometry(0.088, 0.082, 0.13), cuffMat);
+    gauntlet.position.set(-sideSign * 0.02, 0.015, -0.05);
+    arm.add(gauntlet);
+
+    const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.014, 0.036, 4, 6), cuffMat);
+    thumb.position.set(-sideSign * 0.056, 0.038, -0.055);
+    thumb.rotation.z = sideSign * 0.52;
+    arm.add(thumb);
+
+    for (let f = 0; f < 4; f++) {
+      const finger = new THREE.Mesh(new THREE.CapsuleGeometry(0.01, 0.035, 3, 6), cuffMat);
+      finger.position.set(-sideSign * 0.01 + (f - 1.5) * 0.017, 0.03, -0.105);
+      finger.rotation.x = Math.PI * 0.35;
+      arm.add(finger);
+    }
+
+    // Technical Ice Axe gripped in glove
+    const axe = new THREE.Group();
+    axe.position.set(-sideSign * 0.025, 0.035, -0.085);
+    axe.rotation.set(-Math.PI * 0.16, sideSign * 0.16, sideSign * -0.14);
+
+    const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.013, 0.014, 0.46, 8), accentMat);
+    shaft.position.y = 0.06;
+    axe.add(shaft);
+
+    const headCollar = new THREE.Mesh(new THREE.BoxGeometry(0.024, 0.042, 0.065), cuffMat);
+    headCollar.position.set(0, 0.28, -0.01);
+    axe.add(headCollar);
+
+    const pick = new THREE.Mesh(new THREE.BoxGeometry(0.014, 0.036, 0.23), steelMat);
+    pick.position.set(0, 0.275, -0.095);
+    pick.rotation.x = 0.22;
+    axe.add(pick);
+
+    arm.add(axe);
+    return { arm, axe };
+  };
+
+  const left = buildFpArm(-1);
+  const right = buildFpArm(1);
+  root.add(left.arm, right.arm);
+
+  // First-person volumetric headlamp mist cone positioned above brow level (soft fade, no disc)
+  const fpConeGeo = new THREE.ConeGeometry(2.1, 9.0, 24, 1, true);
+  fpConeGeo.translate(0, -4.5, 0);
+  fpConeGeo.rotateX(Math.PI / 2);
+  const fpConeMat = createSoftHeadlampConeMaterial(THREE.BackSide);
+  const headlampCone = new THREE.Mesh(fpConeGeo, fpConeMat);
+  headlampCone.position.set(0, 0.16, -0.38);
+  headlampCone.rotation.x = -0.05;
+  headlampCone.visible = false;
+  root.add(headlampCone);
+
+  // Subtle freezing breath wisp rising near lower-edge camera view in sub-zero night/cold
+  const breathMat = new THREE.MeshBasicMaterial({
+    color: 0xe6f1fc,
+    transparent: true,
+    opacity: 0.0,
+    depthWrite: false,
+  });
+  const breathPuff = new THREE.Mesh(new THREE.SphereGeometry(0.085, 8, 8), breathMat);
+  breathPuff.position.set(0, -0.14, -0.34);
+  root.add(breathPuff);
+
+  return {
+    root,
+    leftArm: left.arm,
+    rightArm: right.arm,
+    leftAxe: left.axe,
+    rightAxe: right.axe,
+    headlampCone,
+    breathPuff,
   };
 }
 
@@ -462,46 +633,105 @@ export function createCampfireModel(): THREE.Group {
 
 export function createPineTreeModel(): THREE.Group {
   const group = new THREE.Group();
-  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3f3024, roughness: 0.92 });
-  const needleMat = new THREE.MeshStandardMaterial({ color: 0x243832, roughness: 0.88 });
-  const snowTipMat = new THREE.MeshStandardMaterial({ color: 0xdbe5ef, roughness: 0.82 });
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x3b2c22, roughness: 0.94 });
+  const needleMat = new THREE.MeshStandardMaterial({ color: 0x1e332d, roughness: 0.87 });
+  const snowTipMat = new THREE.MeshStandardMaterial({ color: 0xd9e4ef, roughness: 0.78 });
 
-  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.28, 3.0, 7), trunkMat);
-  trunk.position.y = 1.5;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.27, 3.6, 8), trunkMat);
+  trunk.position.y = 1.8;
   trunk.castShadow = true;
   group.add(trunk);
 
-  [0, 1, 2].forEach((tier) => {
-    const baseR = 1.65 - tier * 0.38;
-    const h = 2.2 - tier * 0.24;
-    const yCenter = 2.75 + tier * 1.25;
-    const cone = new THREE.Mesh(new THREE.ConeGeometry(baseR, h, 8), needleMat);
-    cone.position.y = yCenter;
-    cone.castShadow = true;
-    group.add(cone);
+  // Layered irregular alpine spruce boughs instead of cartoon single cones
+  const tiers = [
+    { y: 1.9, r: 1.55, count: 6, pitch: 0.22 },
+    { y: 2.8, r: 1.28, count: 6, pitch: 0.26 },
+    { y: 3.65, r: 0.98, count: 5, pitch: 0.3 },
+    { y: 4.35, r: 0.65, count: 4, pitch: 0.36 },
+  ];
+  tiers.forEach((t, tIdx) => {
+    for (let i = 0; i < t.count; i++) {
+      const ang = (i / t.count) * Math.PI * 2 + tIdx * 0.55;
+      const bough = new THREE.Group();
+      bough.position.set(0, t.y, 0);
+      bough.rotation.y = ang;
 
-    if (tier === 2) {
-      const cap = new THREE.Mesh(new THREE.ConeGeometry(baseR * 0.58, h * 0.54, 8), snowTipMat);
-      cap.position.y = yCenter + h * 0.24;
-      group.add(cap);
+      const foliage = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(t.r * 0.42, 0),
+        needleMat
+      );
+      foliage.scale.set(0.95, 0.42, 1.65);
+      foliage.position.set(0, -0.05, t.r * 0.46);
+      foliage.rotation.x = t.pitch;
+      foliage.castShadow = true;
+      bough.add(foliage);
+
+      if (tIdx >= 1) {
+        const snowPatch = new THREE.Mesh(
+          new THREE.DodecahedronGeometry(t.r * 0.32, 0),
+          snowTipMat
+        );
+        snowPatch.scale.set(0.85, 0.24, 1.35);
+        snowPatch.position.set(0, 0.08, t.r * 0.46);
+        snowPatch.rotation.x = t.pitch;
+        bough.add(snowPatch);
+      }
+
+      group.add(bough);
     }
   });
+
+  const crown = new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.95, 7), needleMat);
+  crown.position.y = 4.9;
+  crown.castShadow = true;
+  group.add(crown);
   return group;
 }
 
 export function createCoverBoulderModel(): THREE.Group {
   const group = new THREE.Group();
   const mat = new THREE.MeshStandardMaterial({
-    color: 0x47505c,
-    roughness: 0.92,
-    metalness: 0.06,
+    color: 0x454f5b,
+    roughness: 0.94,
+    metalness: 0.05,
   });
-  const boulder = new THREE.Mesh(new THREE.DodecahedronGeometry(1.7, 1), mat);
-  boulder.position.y = 0.9;
-  boulder.scale.set(1.25, 0.95, 1.0);
-  boulder.castShadow = true;
-  boulder.receiveShadow = true;
-  group.add(boulder);
+  const frostMat = new THREE.MeshStandardMaterial({
+    color: 0xd0deeb,
+    roughness: 0.82,
+    metalness: 0.03,
+  });
+
+  // Fractured multi-chunk granite outcrop
+  const geo = new THREE.IcosahedronGeometry(1.55, 1);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const z = pos.getZ(i);
+    const jag = 0.82 + 0.32 * Math.abs(Math.sin(x * 3.1 + y * 2.3 + z * 2.7));
+    pos.setXYZ(i, x * jag, y * (0.75 + 0.25 * Math.cos(x * 2.1)), z * jag);
+  }
+  geo.computeVertexNormals();
+
+  const mainRock = new THREE.Mesh(geo, mat);
+  mainRock.position.y = 0.85;
+  mainRock.scale.set(1.22, 0.92, 1.05);
+  mainRock.castShadow = true;
+  mainRock.receiveShadow = true;
+  group.add(mainRock);
+
+  const shoulderRock = new THREE.Mesh(new THREE.DodecahedronGeometry(0.88, 0), mat);
+  shoulderRock.position.set(0.85, 0.55, 0.35);
+  shoulderRock.rotation.set(0.5, 0.8, 0.3);
+  shoulderRock.castShadow = true;
+  shoulderRock.receiveShadow = true;
+  group.add(shoulderRock);
+
+  const snowCap = new THREE.Mesh(new THREE.DodecahedronGeometry(0.95, 1), frostMat);
+  snowCap.position.set(-0.08, 1.56, -0.05);
+  snowCap.scale.set(1.05, 0.28, 0.92);
+  snowCap.receiveShadow = true;
+  group.add(snowCap);
   return group;
 }
 

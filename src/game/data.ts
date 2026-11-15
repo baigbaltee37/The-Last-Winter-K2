@@ -1039,6 +1039,9 @@ export const DEFAULT_SETTINGS: GameSettings = {
   touchControls: 'auto',
   voiceOver: true,
   hudMode: 'full',
+  cameraMode: 'third_person',
+  timeMode: 'auto',
+  startTimePreset: 'expedition',
 };
 
 export const DEFAULT_SAVE: SaveProgress = {
